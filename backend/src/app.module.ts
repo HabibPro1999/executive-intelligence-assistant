@@ -1,0 +1,23 @@
+import { Module } from '@nestjs/common';
+import { AppController } from './app.controller';
+import { DatabaseModule } from './database/database.module';
+import { SupabaseModule } from './supabase/supabase.module';
+import { ConversationsModule } from './conversations/conversations.module';
+import { DocumentsModule } from './documents/documents.module';
+import { MessagesModule } from './messages/messages.module';
+import { DecksModule } from './decks/decks.module';
+
+@Module({
+  imports: [
+    // Global infrastructure
+    DatabaseModule,
+    SupabaseModule,
+    // Feature modules
+    ConversationsModule,
+    DocumentsModule,
+    MessagesModule,
+    DecksModule,
+  ],
+  controllers: [AppController],
+})
+export class AppModule {}

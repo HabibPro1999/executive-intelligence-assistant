@@ -1,0 +1,15 @@
+{
+  "name": "eia-sample-docs",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Generates synthetic demo documents for the Executive Intelligence Assistant",
+  "scripts": {
+    "generate": "node generate.mjs"
+  },
+  "dependencies": {
+    "docx": "^9.0.2",
+    "pdfkit": "^0.15.0",
+    "xlsx": "^0.18.5"
+  }
+}

@@ -1,0 +1,38 @@
+# Render blueprint for the NestJS backend.
+# Frontend deploys separately on Vercel (root directory: frontend).
+services:
+  - type: web
+    name: eia-backend
+    runtime: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm install && npm run build
+    startCommand: npm run start:prod
+    healthCheckPath: /api/health
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: documents
+      - key: DATABASE_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_EMBEDDING_MODEL
+        value: text-embedding-004
+      - key: GEMINI_GENERATION_MODEL
+        value: gemini-2.0-flash
+      - key: MAX_FILE_SIZE_MB
+        value: "10"
+      - key: MAX_FILES_PER_CONVERSATION
+        value: "5"
+      - key: MAX_CHUNKS_PER_CONVERSATION
+        value: "100"
+      - key: TOP_K_CHUNKS
+        value: "10"
+      - key: SIMILARITY_THRESHOLD
+        value: "0.35"
+      - key: CORS_ORIGINS
+        sync: false

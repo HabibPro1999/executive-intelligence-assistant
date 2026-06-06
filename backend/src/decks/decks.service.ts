@@ -1,0 +1,473 @@
+import {
+  BadGatewayException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import { PoolClient, QueryResultRow } from 'pg';
+import { config } from '../common/config';
+import { UserMessages } from '../common/errors';
+import {
+  Confidence,
+  DeckSlide,
+  DeckSpec,
+  DeckSummary,
+  RetrievedChunk,
+  Source,
+} from '../common/types';
+import { ConversationsService } from '../conversations/conversations.service';
+import { DatabaseService } from '../database/database.service';
+import { DocumentsService } from '../documents/documents.service';
+import { GenerationService } from '../generation/generation.service';
+import { RetrievalService } from '../retrieval/retrieval.service';
+import { PptxDeckRenderer } from './pptx-deck.renderer';
+
+export interface CreateDeckRequest {
+  message?: string;
+}
+
+export interface CreateDeckResponse {
+  messageId: string;
+  answer: string;
+  deck: DeckSummary | null;
+  sources: Source[];
+  confidence: Confidence;
+  insufficient: boolean;
+}
+
+interface DeckRecord extends QueryResultRow {
+  id: string;
+  conversation_id: string;
+  title: string;
+  request: string;
+  deck_spec: DeckSpec;
+  source_chunk_ids: string[];
+  model_name: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+@Injectable()
+export class DecksService {
+  private readonly logger = new Logger(DecksService.name);
+
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly conversations: ConversationsService,
+    private readonly documents: DocumentsService,
+    private readonly retrieval: RetrievalService,
+    private readonly generation: GenerationService,
+    private readonly renderer: PptxDeckRenderer,
+  ) {}
+
+  async create(
+    conversationId: string,
+    body: CreateDeckRequest = {},
+  ): Promise<CreateDeckResponse> {
+    await this.conversations.ensureExists(conversationId);
+    const request =
+      body.message?.trim() ||
+      'Generate a strategy-consulting presentation deck from the approved documents.';
+    const userMsg = await this.addMessage(conversationId, 'user', request, {
+      mode: 'strategy_deck',
+    });
+
+    const knowledge = await this.resolveKnowledgeConversation(conversationId);
+    if (knowledge.ok === false) {
+      return this.refuse(conversationId, userMsg.id, knowledge.message);
+    }
+
+    const retrieved = await this.retrieval.retrieve(knowledge.conversationId, request);
+    const relevant = this.retrieval.filterRelevant(retrieved);
+    if (!relevant.length) {
+      return this.refuse(
+        conversationId,
+        userMsg.id,
+        UserMessages.insufficientEvidence,
+        retrieved,
+      );
+    }
+
+    const confidence = this.generation.computeConfidence(relevant);
+    const sources = this.generation.toSources(relevant);
+    const deckSpec = await this.buildDeckSpec(request, relevant);
+    const sourceChunkIds = [...new Set(relevant.map((chunk) => chunk.id))];
+
+    const { deck, assistantMsg } = await this.db.withTransaction(async (client) => {
+      const insertedDeck = await client.query<DeckRecord>(
+        `insert into presentation_decks
+           (conversation_id, title, request, deck_spec, source_chunk_ids, model_name)
+         values ($1, $2, $3, $4::jsonb, $5::uuid[], $6)
+         returning *`,
+        [
+          conversationId,
+          deckSpec.title,
+          request,
+          JSON.stringify(deckSpec),
+          sourceChunkIds,
+          this.generation.modelName,
+        ],
+      );
+      const deck = DatabaseService.requireRow(
+        insertedDeck,
+        'Deck insert returned no row.',
+      );
+      const summary = this.toSummary(conversationId, deck.id, deckSpec, sources, confidence);
+      const assistantMsg = await this.addMessageWithClient(
+        client,
+        conversationId,
+        'assistant',
+        `Generated strategy deck: ${deckSpec.title}`,
+        {
+          mode: 'strategy_deck',
+          deck: summary,
+          sources,
+          confidence,
+          ...knowledge.metadata,
+        },
+      );
+      await this.recordDeckRun(client, {
+        conversationId,
+        userMessageId: userMsg.id,
+        assistantMessageId: assistantMsg.id,
+        chunks: relevant,
+        confidence,
+        modelName: this.generation.modelName,
+        metadata: {
+          deck_id: deck.id,
+          slide_count: deckSpec.slides.length,
+          ...knowledge.metadata,
+        },
+      });
+      await this.touchWithClient(client, conversationId, request);
+      return { deck, assistantMsg };
+    });
+
+    const summary = this.toSummary(conversationId, deck.id, deckSpec, sources, confidence);
+    return {
+      messageId: assistantMsg.id,
+      answer: `Generated strategy deck: ${deckSpec.title}`,
+      deck: summary,
+      sources,
+      confidence,
+      insufficient: false,
+    };
+  }
+
+  async exportPptx(
+    conversationId: string,
+    deckId: string,
+  ): Promise<{ filename: string; buffer: Buffer }> {
+    const row = await this.db.one<DeckRecord>(
+      `select * from presentation_decks where id = $1 and conversation_id = $2`,
+      [deckId, conversationId],
+    );
+    if (!row) throw new NotFoundException('Deck not found.');
+    const buffer = await this.renderer.render(row.deck_spec);
+    return {
+      filename: `${this.slug(row.title)}.pptx`,
+      buffer,
+    };
+  }
+
+  private async buildDeckSpec(
+    request: string,
+    chunks: RetrievedChunk[],
+  ): Promise<DeckSpec> {
+    try {
+      const generated = await this.generation.generateDeckSpec(request, chunks);
+      return this.sanitizeDeckSpec(generated, chunks);
+    } catch (err: any) {
+      this.logger.error(`Deck generation failed: ${err?.message}`);
+      throw new BadGatewayException(UserMessages.llmFailed);
+    }
+  }
+
+  private sanitizeDeckSpec(spec: DeckSpec, chunks: RetrievedChunk[]): DeckSpec {
+    if (!spec || !Array.isArray(spec.slides) || !spec.slides.length) {
+      throw new Error('Deck spec missing slides.');
+    }
+    const validChunkIds = new Set(chunks.map((chunk) => chunk.id));
+    const fallbackRefs = chunks.slice(0, 2).map((chunk) => chunk.id);
+    const slides = spec.slides.slice(0, 8).map((slide, index) =>
+      this.sanitizeSlide(slide, index, validChunkIds, fallbackRefs),
+    );
+    if (!slides.some((slide) => slide.type === 'title')) {
+      slides.unshift({
+        type: 'title',
+        headline: this.clean(spec.title, 'Executive Strategy Briefing'),
+        keyMessage: this.clean(spec.thesis, 'Document-grounded strategy synthesis.'),
+        bullets: [],
+        visual: { type: 'none' },
+        speakerNotes: '',
+        sourceRefs: [],
+      });
+    }
+    return {
+      title: this.clean(spec.title, 'Executive Strategy Briefing'),
+      subtitle: this.clean(spec.subtitle, 'Document-grounded CSO briefing'),
+      thesis: this.clean(spec.thesis, slides[1]?.keyMessage || slides[0].keyMessage),
+      audience: 'Chief Strategy Officer',
+      slides,
+      sources: chunks.map((chunk) => ({
+        chunkId: chunk.id,
+        documentId: chunk.document_id,
+        filename: chunk.filename,
+        pageNumber: chunk.page_number,
+        sheetName: chunk.sheet_name,
+        sectionTitle: chunk.section_title,
+      })),
+    };
+  }
+
+  private sanitizeSlide(
+    slide: DeckSlide,
+    index: number,
+    validChunkIds: Set<string>,
+    fallbackRefs: string[],
+  ): DeckSlide {
+    const allowedTypes = new Set([
+      'title',
+      'thesis',
+      'priorities',
+      'opportunity',
+      'benchmark',
+      'performance',
+      'recommendations',
+      'appendix',
+    ]);
+    const type = allowedTypes.has(slide?.type) ? slide.type : index === 0 ? 'title' : 'thesis';
+    const refs = (Array.isArray(slide?.sourceRefs) ? slide.sourceRefs : []).filter((id) =>
+      validChunkIds.has(id),
+    );
+    return {
+      type,
+      headline: this.clean(slide?.headline, 'Executive insight'),
+      keyMessage: this.clean(slide?.keyMessage, 'Evidence-backed strategic implication.'),
+      bullets: (Array.isArray(slide?.bullets) ? slide.bullets : [])
+        .map((bullet) => this.clean(bullet, ''))
+        .filter(Boolean)
+        .slice(0, 5),
+      visual: this.sanitizeVisual(slide?.visual),
+      speakerNotes: this.clean(slide?.speakerNotes, ''),
+      sourceRefs: type === 'title' ? [] : refs.length ? refs : fallbackRefs,
+    };
+  }
+
+  private sanitizeVisual(visual: DeckSlide['visual']): DeckSlide['visual'] {
+    const type = ['none', 'callout', 'table', 'chart'].includes(visual?.type)
+      ? visual.type
+      : 'none';
+    return {
+      type,
+      title: this.clean(visual?.title, ''),
+      columns: Array.isArray(visual?.columns)
+        ? visual.columns.map((v) => this.clean(v, '')).filter(Boolean).slice(0, 5)
+        : [],
+      rows: Array.isArray(visual?.rows)
+        ? visual.rows
+            .map((row) =>
+              Array.isArray(row)
+                ? row.map((v) => this.clean(String(v), '')).slice(0, 5)
+                : [],
+            )
+            .filter((row) => row.length)
+            .slice(0, 8)
+        : [],
+    };
+  }
+
+  private async resolveKnowledgeConversation(conversationId: string): Promise<
+    | { ok: true; conversationId: string; metadata: Record<string, unknown> }
+    | { ok: false; message: string }
+  > {
+    const summary = await this.documents.getStatusSummary(conversationId);
+    if (summary.total === 0) {
+      const demoId = config.demoKnowledgeConversationId;
+      if (!demoId) return { ok: false, message: UserMessages.noDocuments };
+      const demo = await this.documents.getStatusSummary(demoId).catch(() => null);
+      if (!demo?.indexed) return { ok: false, message: UserMessages.noDocuments };
+      return {
+        ok: true,
+        conversationId: demoId,
+        metadata: {
+          knowledgeBase: 'demo',
+          knowledgeConversationId: demoId,
+        },
+      };
+    }
+    if (summary.indexed === 0) {
+      return {
+        ok: false,
+        message:
+          summary.processing > 0
+            ? UserMessages.documentsProcessing
+            : UserMessages.noDocuments,
+      };
+    }
+    return { ok: true, conversationId, metadata: {} };
+  }
+
+  private async refuse(
+    conversationId: string,
+    userMessageId: string,
+    text: string,
+    retrieved: RetrievedChunk[] = [],
+  ): Promise<CreateDeckResponse> {
+    const assistantMsg = await this.db.withTransaction(async (client) => {
+      const msg = await this.addMessageWithClient(
+        client,
+        conversationId,
+        'assistant',
+        text,
+        {
+          mode: 'strategy_deck',
+          deck: null,
+          sources: [],
+          confidence: 'low',
+          insufficient: true,
+        },
+      );
+      await this.recordDeckRun(client, {
+        conversationId,
+        userMessageId,
+        assistantMessageId: msg.id,
+        chunks: retrieved,
+        confidence: 'low',
+        modelName: null,
+        metadata: { insufficient: true },
+      });
+      await this.touchWithClient(client, conversationId);
+      return msg;
+    });
+    return {
+      messageId: assistantMsg.id,
+      answer: text,
+      deck: null,
+      sources: [],
+      confidence: 'low',
+      insufficient: true,
+    };
+  }
+
+  private async addMessage(
+    conversationId: string,
+    role: 'user' | 'assistant',
+    content: string,
+    metadata: Record<string, unknown>,
+  ) {
+    return this.db.oneOrThrow(
+      `insert into messages (conversation_id, role, content, metadata)
+       values ($1, $2, $3, $4::jsonb) returning *`,
+      [conversationId, role, content, JSON.stringify(metadata)],
+      'Message insert returned no row.',
+    );
+  }
+
+  private async addMessageWithClient(
+    client: PoolClient,
+    conversationId: string,
+    role: 'user' | 'assistant',
+    content: string,
+    metadata: Record<string, unknown>,
+  ) {
+    const result = await client.query(
+      `insert into messages (conversation_id, role, content, metadata)
+       values ($1, $2, $3, $4::jsonb) returning *`,
+      [conversationId, role, content, JSON.stringify(metadata)],
+    );
+    return DatabaseService.requireRow(result, 'Message insert returned no row.');
+  }
+
+  private async recordDeckRun(
+    client: PoolClient,
+    input: {
+      conversationId: string;
+      userMessageId: string;
+      assistantMessageId: string;
+      chunks: RetrievedChunk[];
+      confidence: Confidence;
+      modelName: string | null;
+      metadata: Record<string, unknown>;
+    },
+  ): Promise<void> {
+    const chunkIds = input.chunks.map((chunk) => chunk.id);
+    const documentIds = [...new Set(input.chunks.map((chunk) => chunk.document_id))];
+    await client.query(
+      `insert into assistant_runs
+         (conversation_id, user_message_id, assistant_message_id, mode, model_name,
+          retrieved_chunk_ids, retrieved_document_ids, confidence, metadata)
+       values ($1, $2, $3, 'strategy_deck', $4, $5::uuid[], $6::uuid[], $7, $8::jsonb)`,
+      [
+        input.conversationId,
+        input.userMessageId,
+        input.assistantMessageId,
+        input.modelName,
+        chunkIds,
+        documentIds,
+        input.confidence,
+        JSON.stringify({ chunk_count: chunkIds.length, ...input.metadata }),
+      ],
+    );
+  }
+
+  private async touchWithClient(
+    client: PoolClient,
+    id: string,
+    candidateTitle?: string,
+  ): Promise<void> {
+    if (candidateTitle) {
+      const title = candidateTitle.trim().slice(0, 80);
+      await client.query(
+        `update conversations
+            set updated_at = now(),
+                title = coalesce(title, $2)
+          where id = $1`,
+        [id, title],
+      );
+      return;
+    }
+    await client.query(`update conversations set updated_at = now() where id = $1`, [
+      id,
+    ]);
+  }
+
+  private toSummary(
+    conversationId: string,
+    deckId: string,
+    spec: DeckSpec,
+    sources: Source[],
+    confidence: Confidence,
+  ): DeckSummary {
+    return {
+      deckId,
+      title: spec.title,
+      thesis: spec.thesis,
+      slides: spec.slides.map((slide) => ({
+        type: slide.type,
+        headline: slide.headline,
+        keyMessage: slide.keyMessage,
+      })),
+      sources,
+      confidence,
+      insufficient: false,
+      downloadUrl: `/api/conversations/${conversationId}/decks/${deckId}/download`,
+    };
+  }
+
+  private clean(value: unknown, fallback: string): string {
+    if (typeof value !== 'string') return fallback;
+    const cleaned = value.replace(/\s+/g, ' ').trim();
+    return cleaned || fallback;
+  }
+
+  private slug(value: string): string {
+    return (
+      value
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '')
+        .slice(0, 80) || 'strategy-deck'
+    );
+  }
+}
