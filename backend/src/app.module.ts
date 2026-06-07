@@ -6,6 +6,7 @@ import { ConversationsModule } from './conversations/conversations.module';
 import { DocumentsModule } from './documents/documents.module';
 import { MessagesModule } from './messages/messages.module';
 import { DecksModule } from './decks/decks.module';
+import { PreferencesModule } from './preferences/preferences.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { DecksModule } from './decks/decks.module';
     DocumentsModule,
     MessagesModule,
     DecksModule,
+    PreferencesModule,
   ],
   controllers: [AppController],
 })

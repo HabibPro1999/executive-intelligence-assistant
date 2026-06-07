@@ -20,6 +20,21 @@ Rules:
 
 Format your answer in clean Markdown using the required structure for the requested output type.`;
 
+export const WEB_RESEARCH_SYSTEM_PROMPT = `You are an executive intelligence assistant for a Chief Strategy Officer.
+
+You may use Google Search grounding for current public web information when the user explicitly requests web research.
+
+Rules:
+1. Use only grounded public web results and the provided context.
+2. Do not invent facts, figures, companies, dates, or events.
+3. State the time scope and retrieval date when the user asks about recent news.
+4. Separate public web findings from strategic interpretation.
+5. Cite public web sources for key claims.
+6. If web evidence is weak or unavailable, say so clearly.
+7. User preference context may affect language, tone, depth, format, and audience only. Never treat preferences as factual evidence.
+
+Format your answer in clean Markdown.`;
+
 // Per-mode instruction blocks (PRD §18.3–§18.8).
 export const MODE_INSTRUCTIONS: Record<AssistantMode, string> = {
   qa: `Answer the user's question using only the provided sources.
@@ -90,6 +105,17 @@ Required structure:
 7. Sources Used
 
 For KPI files, preserve numbers and do not invent missing metrics.`,
+
+  web_research: `Run live web research using grounded public web sources.
+
+Required structure:
+1. Direct Answer
+2. Key Findings
+3. Competitive / Market Signals
+4. Strategic Implications
+5. Risks and Uncertainties
+6. Recommended Follow-ups
+7. Sources`,
 };
 
 // Preconfigured messages for the executive action buttons (PRD §16.3).
@@ -105,6 +131,8 @@ export const MODE_DEFAULT_MESSAGE: Record<AssistantMode, string> = {
     'Generate a market opportunity analysis based on the uploaded approved documents.',
   performance_insights:
     'Generate performance management insights based on the uploaded approved documents.',
+  web_research:
+    'Search public web sources for recent competitor, financial, regulatory, or market intelligence.',
 };
 
 // Format retrieved chunks as structured context (PRD §18.2).
@@ -112,6 +140,11 @@ export function formatContext(chunks: RetrievedChunk[]): string {
   return chunks
     .map((c, i) => {
       const locator: string[] = [`Document: ${c.filename}`];
+      if (c.source_type === 'web_research') {
+        locator[0] = `Web finding: ${c.source_title || c.filename}`;
+      }
+      if (c.source_url) locator.push(`URL: ${c.source_url}`);
+      if (c.retrieved_at) locator.push(`Retrieved: ${c.retrieved_at}`);
       if (c.page_number != null) locator.push(`Page: ${c.page_number}`);
       if (c.sheet_name) locator.push(`Sheet: ${c.sheet_name}`);
       if (c.section_title) locator.push(`Section: ${c.section_title}`);
@@ -126,8 +159,11 @@ export function buildUserPrompt(
   mode: AssistantMode,
   question: string,
   contextText: string,
+  preferenceContext?: string | null,
 ): string {
   return `${MODE_INSTRUCTIONS[mode]}
+
+${formatPreferenceContext(preferenceContext)}
 
 === APPROVED DOCUMENT CONTEXT (the only allowed source of truth) ===
 ${contextText}
@@ -136,7 +172,11 @@ ${contextText}
 User request: ${question}`;
 }
 
-export function buildDeckPrompt(question: string, contextText: string): string {
+export function buildDeckPrompt(
+  question: string,
+  contextText: string,
+  preferenceContext?: string | null,
+): string {
   return `Create a strategy-consulting briefing deck for a Chief Strategy Officer using only the approved document context.
 
 Return valid JSON only. Do not wrap it in Markdown. Do not include comments.
@@ -152,6 +192,8 @@ Deck requirements:
 - Use tables only when the context contains structured values.
 - If a chart is not directly supported by numeric context, use a table or callout instead.
 - Do not mention McKinsey or copy any consulting firm branding.
+
+${formatPreferenceContext(preferenceContext)}
 
 JSON schema:
 {
@@ -192,4 +234,56 @@ ${contextText}
 === END CONTEXT ===
 
 User request: ${question}`;
+}
+
+export function buildWebResearchPrompt(input: {
+  question: string;
+  contextText: string;
+  preferenceContext?: string | null;
+  currentDate: string;
+}): string {
+  return `${MODE_INSTRUCTIONS.web_research}
+
+Current date: ${input.currentDate}
+
+${formatPreferenceContext(input.preferenceContext)}
+
+=== PRIOR CONVERSATION RAG CONTEXT (optional, not a substitute for live web evidence) ===
+${input.contextText || '(none)'}
+=== END PRIOR CONTEXT ===
+
+User request: ${input.question}`;
+}
+
+export function formatPreferenceContext(preferenceContext?: string | null): string {
+  if (!preferenceContext?.trim()) return '';
+  return `=== RETRIEVED USER PREFERENCE CONTEXT (style only, never factual evidence) ===
+${preferenceContext.trim()}
+=== END USER PREFERENCE CONTEXT ===
+
+Apply these preferences to language, tone, depth, format, and audience only. Do not use them as facts, citations, or retrieval evidence.`;
+}
+
+export function buildPreferenceInferencePrompt(input: {
+  currentProfile: string;
+  question: string;
+  answer: string;
+  mode: string;
+}): string {
+  return `Update a compact user style preference profile from this chat turn.
+
+Only keep durable preferences about response language, tone, depth, format, audience, and recurring presentation style.
+Do not store facts from uploaded documents, private business content, tasks, temporary requests, names, or one-off questions.
+If no durable preference is visible, return exactly NO_CHANGE.
+If there is a useful durable preference, return the full updated profile as plain text, maximum 100 words.
+
+Current profile:
+${input.currentProfile || '(none)'}
+
+Mode: ${input.mode}
+User message:
+${input.question}
+
+Assistant answer:
+${input.answer}`;
 }

@@ -8,6 +8,8 @@ import {
 } from '../documents/documents.service';
 import { RetrievalService } from '../retrieval/retrieval.service';
 import { GenerationService } from '../generation/generation.service';
+import { PreferencesService } from '../preferences/preferences.service';
+import { WebResearchService } from '../web-research/web-research.service';
 import { MODE_DEFAULT_MESSAGE } from '../generation/prompt-templates';
 import { config } from '../common/config';
 import { AppError, UserMessages } from '../common/errors';
@@ -35,6 +37,21 @@ export interface ChatResponse {
   insufficient: boolean;
 }
 
+export type ChatStreamEvent =
+  | { type: 'message'; messageId: string; mode: AssistantMode }
+  | { type: 'status'; label: string }
+  | { type: 'delta'; text: string }
+  | {
+      type: 'sources';
+      sources: Source[];
+      confidence: Confidence;
+      insufficient: boolean;
+    }
+  | { type: 'done'; messageId: string }
+  | { type: 'error'; message: string };
+
+export type ChatStreamEmit = (event: ChatStreamEvent) => void;
+
 @Injectable()
 export class MessagesService {
   private readonly logger = new Logger(MessagesService.name);
@@ -45,6 +62,8 @@ export class MessagesService {
     private readonly documents: DocumentsService,
     private readonly retrieval: RetrievalService,
     private readonly generation: GenerationService,
+    private readonly preferences: PreferencesService,
+    private readonly webResearch: WebResearchService,
   ) {}
 
   async add(
@@ -63,10 +82,11 @@ export class MessagesService {
 
   // Orchestrates the RAG chat flow (PRD §9.3 / §15.6).
   async handleChat(
+    userId: string,
     conversationId: string,
     body: ChatRequest,
   ): Promise<ChatResponse> {
-    await this.conversations.ensureExists(conversationId);
+    await this.conversations.ensureExists(conversationId, userId);
 
     const mode: AssistantMode = ASSISTANT_MODES.includes(body.mode as AssistantMode)
       ? (body.mode as AssistantMode)
@@ -77,20 +97,33 @@ export class MessagesService {
     }
 
     const userMsg = await this.add(conversationId, 'user', question, { mode });
+    const preferenceContext = await this.preferences.retrieveContext(userId, question);
+
+    if (mode === 'web_research') {
+      return this.handleWebResearch({
+        userId,
+        conversationId,
+        userMessageId: userMsg.id,
+        question,
+        preferenceContext,
+      });
+    }
 
     // Guard: documents must exist and be indexed before answering. Empty
     // conversations may fall back to a configured demo knowledge base.
-    const summary = await this.documents.getStatusSummary(conversationId);
+    const summary = await this.documents.getStatusSummary(conversationId, userId);
     let knowledgeConversationId = conversationId;
     let knowledgeMetadata: Record<string, unknown> = {};
     if (summary.total === 0) {
-      const demo = await this.getDemoKnowledge();
+      const demo = await this.getDemoKnowledge(userId);
       if (!demo) {
         return this.refuse(
           conversationId,
           userMsg.id,
           mode,
           UserMessages.noDocuments,
+          [],
+          preferenceContext,
         );
       }
       knowledgeConversationId = demo.conversationId;
@@ -104,7 +137,7 @@ export class MessagesService {
         summary.processing > 0
           ? UserMessages.documentsProcessing
           : UserMessages.noDocuments;
-      return this.refuse(conversationId, userMsg.id, mode, text);
+      return this.refuse(conversationId, userMsg.id, mode, text, [], preferenceContext);
     }
 
     // Retrieve grounded evidence.
@@ -117,11 +150,17 @@ export class MessagesService {
         mode,
         UserMessages.insufficientEvidence,
         retrieved,
+        preferenceContext,
       );
     }
 
     // Generate the grounded answer.
-    const answer = await this.generation.generateAnswer(mode, question, relevant);
+    const answer = await this.generation.generateAnswer(
+      mode,
+      question,
+      relevant,
+      preferenceContext,
+    );
     const confidence = this.generation.computeConfidence(relevant);
     const sources = this.generation.toSources(relevant);
 
@@ -130,6 +169,7 @@ export class MessagesService {
         sources,
         confidence,
         mode,
+        preferenceContext,
         ...knowledgeMetadata,
       });
       await this.recordRunWithClient(client, {
@@ -145,6 +185,12 @@ export class MessagesService {
       return msg;
     });
 
+    void this.preferences
+      .learnFromTurn({ userId, question, answer, mode })
+      .catch((err) =>
+        this.logger.warn(`Preference learning skipped: ${err?.message}`),
+      );
+
     return {
       messageId: assistantMsg.id,
       answer,
@@ -154,14 +200,333 @@ export class MessagesService {
     };
   }
 
-  private async getDemoKnowledge(): Promise<{
+  async handleChatStream(
+    userId: string,
+    conversationId: string,
+    body: ChatRequest,
+    emit: ChatStreamEmit,
+  ): Promise<void> {
+    await this.conversations.ensureExists(conversationId, userId);
+
+    const mode: AssistantMode = ASSISTANT_MODES.includes(body.mode as AssistantMode)
+      ? (body.mode as AssistantMode)
+      : 'qa';
+    const question = (body.message?.trim() || MODE_DEFAULT_MESSAGE[mode]).trim();
+    if (!question) {
+      throw new AppError('A message is required.', HttpStatus.BAD_REQUEST);
+    }
+
+    const userMsg = await this.add(conversationId, 'user', question, { mode });
+    emit({ type: 'message', messageId: userMsg.id, mode });
+
+    const preferenceContext = await this.preferences.retrieveContext(userId, question);
+    if (mode === 'web_research') {
+      await this.handleWebResearchStream({
+        userId,
+        conversationId,
+        userMessageId: userMsg.id,
+        question,
+        preferenceContext,
+        emit,
+      });
+      return;
+    }
+
+    await this.handleDocumentStream({
+      userId,
+      conversationId,
+      userMessageId: userMsg.id,
+      mode,
+      question,
+      preferenceContext,
+      emit,
+    });
+  }
+
+  private async handleWebResearch(input: {
+    userId: string;
+    conversationId: string;
+    userMessageId: string;
+    question: string;
+    preferenceContext?: string | null;
+  }): Promise<ChatResponse> {
+    const retrieved = await this.retrieval.retrieve(
+      input.conversationId,
+      input.question,
+      config.retrieval.topK,
+      ['uploaded_document', 'web_research'],
+    );
+    const relevant = this.retrieval.filterRelevant(retrieved);
+    const result = await this.webResearch.research({
+      conversationId: input.conversationId,
+      question: input.question,
+      contextChunks: relevant,
+      preferenceContext: input.preferenceContext,
+    });
+
+    const auditChunks = [...relevant, ...result.savedChunks];
+    const assistantMsg = await this.db.withTransaction(async (client) => {
+      const msg = await this.addWithClient(
+        client,
+        input.conversationId,
+        'assistant',
+        result.answer,
+        {
+          sources: result.sources,
+          confidence: result.confidence,
+          mode: 'web_research',
+          preferenceContext: input.preferenceContext,
+          webResearch: result.metadata,
+        },
+      );
+      await this.recordRunWithClient(client, {
+        conversationId: input.conversationId,
+        userMessageId: input.userMessageId,
+        assistantMessageId: msg.id,
+        mode: 'web_research',
+        modelName: this.generation.modelName,
+        chunks: auditChunks,
+        confidence: result.confidence,
+        metadata: result.metadata,
+      });
+      await this.touchWithClient(client, input.conversationId, input.question);
+      return msg;
+    });
+
+    void this.preferences
+      .learnFromTurn({
+        userId: input.userId,
+        question: input.question,
+        answer: result.answer,
+        mode: 'web_research',
+      })
+      .catch((err) =>
+        this.logger.warn(`Preference learning skipped: ${err?.message}`),
+      );
+
+    return {
+      messageId: assistantMsg.id,
+      answer: result.answer,
+      sources: result.sources,
+      confidence: result.confidence,
+      insufficient: false,
+    };
+  }
+
+  private async handleDocumentStream(input: {
+    userId: string;
+    conversationId: string;
+    userMessageId: string;
+    mode: AssistantMode;
+    question: string;
+    preferenceContext?: string | null;
+    emit: ChatStreamEmit;
+  }): Promise<void> {
+    input.emit({ type: 'status', label: 'Checking approved documents' });
+    const summary = await this.documents.getStatusSummary(
+      input.conversationId,
+      input.userId,
+    );
+    let knowledgeConversationId = input.conversationId;
+    let knowledgeMetadata: Record<string, unknown> = {};
+
+    if (summary.total === 0) {
+      const demo = await this.getDemoKnowledge(input.userId);
+      if (!demo) {
+        await this.streamRefuse(
+          input.conversationId,
+          input.userMessageId,
+          input.mode,
+          UserMessages.noDocuments,
+          [],
+          input.preferenceContext,
+          input.emit,
+        );
+        return;
+      }
+      knowledgeConversationId = demo.conversationId;
+      knowledgeMetadata = {
+        knowledgeBase: 'demo',
+        knowledgeConversationId,
+      };
+    }
+
+    if (summary.total > 0 && summary.indexed === 0) {
+      await this.streamRefuse(
+        input.conversationId,
+        input.userMessageId,
+        input.mode,
+        summary.processing > 0
+          ? UserMessages.documentsProcessing
+          : UserMessages.noDocuments,
+        [],
+        input.preferenceContext,
+        input.emit,
+      );
+      return;
+    }
+
+    input.emit({ type: 'status', label: 'Retrieving relevant evidence' });
+    const retrieved = await this.retrieval.retrieve(
+      knowledgeConversationId,
+      input.question,
+    );
+    const relevant = this.retrieval.filterRelevant(retrieved);
+    if (relevant.length === 0) {
+      await this.streamRefuse(
+        input.conversationId,
+        input.userMessageId,
+        input.mode,
+        UserMessages.insufficientEvidence,
+        retrieved,
+        input.preferenceContext,
+        input.emit,
+      );
+      return;
+    }
+
+    input.emit({ type: 'status', label: 'Generating answer' });
+    let answer = '';
+    for await (const chunk of this.generation.streamAnswer(
+      input.mode,
+      input.question,
+      relevant,
+      input.preferenceContext,
+    )) {
+      if (!chunk.text) continue;
+      answer += chunk.text;
+      input.emit({ type: 'delta', text: chunk.text });
+    }
+
+    const confidence = this.generation.computeConfidence(relevant);
+    const sources = this.generation.toSources(relevant);
+    input.emit({ type: 'sources', sources, confidence, insufficient: false });
+    input.emit({ type: 'status', label: 'Saving response' });
+
+    const assistantMsg = await this.db.withTransaction(async (client) => {
+      const msg = await this.addWithClient(client, input.conversationId, 'assistant', answer, {
+        sources,
+        confidence,
+        mode: input.mode,
+        preferenceContext: input.preferenceContext,
+        ...knowledgeMetadata,
+      });
+      await this.recordRunWithClient(client, {
+        conversationId: input.conversationId,
+        userMessageId: input.userMessageId,
+        assistantMessageId: msg.id,
+        mode: input.mode,
+        modelName: this.generation.modelName,
+        chunks: relevant,
+        confidence,
+      });
+      await this.touchWithClient(client, input.conversationId, input.question);
+      return msg;
+    });
+
+    void this.preferences
+      .learnFromTurn({
+        userId: input.userId,
+        question: input.question,
+        answer,
+        mode: input.mode,
+      })
+      .catch((err) =>
+        this.logger.warn(`Preference learning skipped: ${err?.message}`),
+      );
+
+    input.emit({ type: 'done', messageId: assistantMsg.id });
+  }
+
+  private async handleWebResearchStream(input: {
+    userId: string;
+    conversationId: string;
+    userMessageId: string;
+    question: string;
+    preferenceContext?: string | null;
+    emit: ChatStreamEmit;
+  }): Promise<void> {
+    input.emit({ type: 'status', label: 'Retrieving conversation context' });
+    const retrieved = await this.retrieval.retrieve(
+      input.conversationId,
+      input.question,
+      config.retrieval.topK,
+      ['uploaded_document', 'web_research'],
+    );
+    const relevant = this.retrieval.filterRelevant(retrieved);
+
+    input.emit({ type: 'status', label: 'Searching public web sources' });
+    const result = await this.webResearch.researchStream(
+      {
+        conversationId: input.conversationId,
+        question: input.question,
+        contextChunks: relevant,
+        preferenceContext: input.preferenceContext,
+      },
+      (text) => input.emit({ type: 'delta', text }),
+      (label) => input.emit({ type: 'status', label }),
+    );
+
+    input.emit({
+      type: 'sources',
+      sources: result.sources,
+      confidence: result.confidence,
+      insufficient: false,
+    });
+    input.emit({ type: 'status', label: 'Saving response' });
+
+    const auditChunks = [...relevant, ...result.savedChunks];
+    const assistantMsg = await this.db.withTransaction(async (client) => {
+      const msg = await this.addWithClient(
+        client,
+        input.conversationId,
+        'assistant',
+        result.answer,
+        {
+          sources: result.sources,
+          confidence: result.confidence,
+          mode: 'web_research',
+          preferenceContext: input.preferenceContext,
+          webResearch: result.metadata,
+        },
+      );
+      await this.recordRunWithClient(client, {
+        conversationId: input.conversationId,
+        userMessageId: input.userMessageId,
+        assistantMessageId: msg.id,
+        mode: 'web_research',
+        modelName: this.generation.modelName,
+        chunks: auditChunks,
+        confidence: result.confidence,
+        metadata: result.metadata,
+      });
+      await this.touchWithClient(client, input.conversationId, input.question);
+      return msg;
+    });
+
+    void this.preferences
+      .learnFromTurn({
+        userId: input.userId,
+        question: input.question,
+        answer: result.answer,
+        mode: 'web_research',
+      })
+      .catch((err) =>
+        this.logger.warn(`Preference learning skipped: ${err?.message}`),
+      );
+
+    input.emit({ type: 'done', messageId: assistantMsg.id });
+  }
+
+  private async getDemoKnowledge(userId: string): Promise<{
     conversationId: string;
     summary: DocumentStatusSummary;
   } | null> {
     const conversationId = config.demoKnowledgeConversationId;
     if (!conversationId) return null;
     try {
-      const summary = await this.documents.getStatusSummary(conversationId);
+      await this.conversations.ensureExists(conversationId, userId);
+      const summary = await this.documents.getStatusSummary(conversationId, userId);
       if (summary.indexed === 0) return null;
       return { conversationId, summary };
     } catch (err: any) {
@@ -179,13 +544,16 @@ export class MessagesService {
     mode: AssistantMode,
     text: string,
     retrieved: RetrievedChunk[] = [],
+    preferenceContext?: string | null,
   ): Promise<ChatResponse> {
+    const answer = this.styleRefusal(text, preferenceContext);
     const assistantMsg = await this.db.withTransaction(async (client) => {
-      const msg = await this.addWithClient(client, conversationId, 'assistant', text, {
+      const msg = await this.addWithClient(client, conversationId, 'assistant', answer, {
         sources: [],
         confidence: 'low' as Confidence,
         mode,
         insufficient: true,
+        preferenceContext,
       });
       await this.recordRunWithClient(client, {
         conversationId,
@@ -201,11 +569,54 @@ export class MessagesService {
     });
     return {
       messageId: assistantMsg.id,
-      answer: text,
+      answer,
       sources: [],
       confidence: 'low',
       insufficient: true,
     };
+  }
+
+  private async streamRefuse(
+    conversationId: string,
+    userMessageId: string,
+    mode: AssistantMode,
+    text: string,
+    retrieved: RetrievedChunk[],
+    preferenceContext: string | null | undefined,
+    emit: ChatStreamEmit,
+  ): Promise<void> {
+    emit({ type: 'status', label: 'Saving response' });
+    const response = await this.refuse(
+      conversationId,
+      userMessageId,
+      mode,
+      text,
+      retrieved,
+      preferenceContext,
+    );
+    emit({ type: 'delta', text: response.answer });
+    emit({
+      type: 'sources',
+      sources: response.sources,
+      confidence: response.confidence,
+      insufficient: response.insufficient,
+    });
+    emit({ type: 'done', messageId: response.messageId });
+  }
+
+  private styleRefusal(text: string, preferenceContext?: string | null): string {
+    if (!preferenceContext) return text;
+    if (!/arabic|العربية|عربي/i.test(preferenceContext)) return text;
+    if (text === UserMessages.noDocuments) {
+      return 'لا توجد مستندات معتمدة في هذه المحادثة حتى الآن. يرجى تحميل مستندات ذات صلة كي أجيب بناء عليها فقط.';
+    }
+    if (text === UserMessages.documentsProcessing) {
+      return 'ما زالت المستندات قيد الفهرسة. يرجى المحاولة مرة أخرى بعد اكتمال المعالجة.';
+    }
+    if (text === UserMessages.insufficientEvidence) {
+      return 'لا تتضمن المستندات المعتمدة أدلة كافية للإجابة عن هذا الطلب بثقة. يرجى تحميل مصدر ذي صلة أو تضييق نطاق السؤال.';
+    }
+    return text;
   }
 
   private async addWithClient(
@@ -232,6 +643,7 @@ export class MessagesService {
     modelName: string | null;
     chunks: RetrievedChunk[];
     confidence: Confidence;
+    metadata?: Record<string, unknown>;
   }): Promise<void> {
     const chunkIds = input.chunks.map((c) => c.id);
     const documentIds = [...new Set(input.chunks.map((c) => c.document_id))];
@@ -249,7 +661,7 @@ export class MessagesService {
         chunkIds,
         documentIds,
         input.confidence,
-        JSON.stringify({ chunk_count: chunkIds.length }),
+        JSON.stringify({ chunk_count: chunkIds.length, ...input.metadata }),
       ],
     );
   }

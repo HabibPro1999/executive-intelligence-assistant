@@ -1,17 +1,21 @@
-// Anonymous conversation id persisted in the browser (PRD §21.1).
+// Last opened conversation id, scoped per authenticated user.
 const KEY = 'eia_conversation_id';
 
-export function getStoredConversationId(): string | null {
+function scopedKey(userId: string): string {
+  return `${KEY}:${userId}`;
+}
+
+export function getStoredConversationId(userId: string): string | null {
   if (typeof window === 'undefined') return null;
-  return window.localStorage.getItem(KEY);
+  return window.localStorage.getItem(scopedKey(userId));
 }
 
-export function storeConversationId(id: string): void {
+export function storeConversationId(userId: string, id: string): void {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(KEY, id);
+  window.localStorage.setItem(scopedKey(userId), id);
 }
 
-export function clearConversationId(): void {
+export function clearConversationId(userId: string): void {
   if (typeof window === 'undefined') return;
-  window.localStorage.removeItem(KEY);
+  window.localStorage.removeItem(scopedKey(userId));
 }

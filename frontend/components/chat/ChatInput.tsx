@@ -1,18 +1,29 @@
 'use client';
 
 import { useRef, useState, KeyboardEvent } from 'react';
-import { Paperclip, Send, Loader2 } from 'lucide-react';
+import { FileText, Globe2, Paperclip, Send, Loader2 } from 'lucide-react';
+import { AssistantMode } from '@/types';
 
 interface Props {
   onSend: (message: string) => void;
   onUpload: (files: FileList) => void;
+  mode: AssistantMode;
+  onModeChange: (mode: AssistantMode) => void;
   disabled?: boolean;
   busy?: boolean;
 }
 
-export default function ChatInput({ onSend, onUpload, disabled, busy }: Props) {
+export default function ChatInput({
+  onSend,
+  onUpload,
+  mode,
+  onModeChange,
+  disabled,
+  busy,
+}: Props) {
   const [value, setValue] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
+  const webMode = mode === 'web_research';
 
   const submit = () => {
     const text = value.trim();
@@ -30,6 +41,28 @@ export default function ChatInput({ onSend, onUpload, disabled, busy }: Props) {
 
   return (
     <div className="border-t border-slate-200 bg-white p-3">
+      <div className="mb-2 inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-xs">
+        <button
+          type="button"
+          onClick={() => onModeChange('qa')}
+          className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 font-medium ${
+            !webMode ? 'bg-white text-ink shadow-sm' : 'text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          <FileText className="h-3.5 w-3.5" />
+          Documents
+        </button>
+        <button
+          type="button"
+          onClick={() => onModeChange('web_research')}
+          className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 font-medium ${
+            webMode ? 'bg-white text-sky-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          <Globe2 className="h-3.5 w-3.5" />
+          Web Research
+        </button>
+      </div>
       <div className="flex items-end gap-2 rounded-xl border border-slate-300 bg-white px-2 py-1.5 focus-within:border-brand">
         <button
           type="button"
@@ -55,7 +88,11 @@ export default function ChatInput({ onSend, onUpload, disabled, busy }: Props) {
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Ask about your uploaded documents…"
+          placeholder={
+            webMode
+              ? 'Ask for live competitor, market, financial, or regulatory research...'
+              : 'Ask about your uploaded documents...'
+          }
           className="max-h-40 flex-1 resize-none bg-transparent py-2 text-sm outline-none placeholder:text-slate-400"
         />
         <button
@@ -72,8 +109,10 @@ export default function ChatInput({ onSend, onUpload, disabled, busy }: Props) {
         </button>
       </div>
       <p className="mt-1.5 px-1 text-[11px] text-slate-400">
-        Answers are grounded only in your uploaded documents. Enter to send,
-        Shift+Enter for a new line.
+        {webMode
+          ? 'Web Research uses public web sources and saves cited findings to this conversation.'
+          : 'Document mode is grounded only in your uploaded documents.'}{' '}
+        Enter to send, Shift+Enter for a new line.
       </p>
     </div>
   );

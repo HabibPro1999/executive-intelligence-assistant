@@ -9,7 +9,8 @@
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main.js",
     "typecheck": "tsc --noEmit",
-    "seed:demo": "node scripts/seed-demo-knowledge.mjs"
+    "seed:demo": "node scripts/seed-demo-knowledge.mjs",
+    "reset:seed": "node scripts/reset-and-seed-demo.mjs"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.4",

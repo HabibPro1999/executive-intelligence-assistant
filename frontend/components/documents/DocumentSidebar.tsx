@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef } from 'react';
-import { FileText, FileSpreadsheet, FileType, Upload, Plus } from 'lucide-react';
+import { FileText, FileSpreadsheet, FileType, Globe2, Upload, Plus } from 'lucide-react';
 import { DocumentRecord } from '@/types';
 import DocumentStatusBadge from './DocumentStatusBadge';
 import DemoNotice from '@/components/DemoNotice';
@@ -14,6 +14,7 @@ interface Props {
 }
 
 function FileIcon({ type }: { type: string }) {
+  if (type === 'web') return <Globe2 className="h-4 w-4 text-sky-600" />;
   if (type === 'xlsx') return <FileSpreadsheet className="h-4 w-4 text-emerald-600" />;
   if (type === 'docx') return <FileType className="h-4 w-4 text-blue-600" />;
   return <FileText className="h-4 w-4 text-rose-600" />;
@@ -61,6 +62,11 @@ export default function DocumentSidebar({
                   </p>
                   <div className="mt-1.5">
                     <DocumentStatusBadge status={doc.status} />
+                    {doc.source_type === 'web_research' && (
+                      <span className="ml-1 rounded-full bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 ring-1 ring-sky-100">
+                        Web
+                      </span>
+                    )}
                   </div>
                   <p className="mt-1.5 text-[11px] text-slate-400">
                     {doc.page_count != null && `${doc.page_count} pages`}

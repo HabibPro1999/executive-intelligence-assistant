@@ -1,10 +1,17 @@
 import { Injectable } from '@nestjs/common';
-import { GeminiGenerationProvider } from './gemini-generation.provider';
+import {
+  GeminiGenerateResult,
+  GeminiGenerationProvider,
+  GeminiStreamChunk,
+} from './gemini-generation.provider';
 import {
   BASE_SYSTEM_PROMPT,
   buildDeckPrompt,
+  buildPreferenceInferencePrompt,
   buildUserPrompt,
+  buildWebResearchPrompt,
   formatContext,
+  WEB_RESEARCH_SYSTEM_PROMPT,
 } from './prompt-templates';
 import { config } from '../common/config';
 import {
@@ -28,21 +35,108 @@ export class GenerationService {
     mode: AssistantMode,
     question: string,
     chunks: RetrievedChunk[],
+    preferenceContext?: string | null,
   ): Promise<string> {
     const contextText = formatContext(chunks);
-    const userPrompt = buildUserPrompt(mode, question, contextText);
+    const userPrompt = buildUserPrompt(
+      mode,
+      question,
+      contextText,
+      preferenceContext,
+    );
     return this.provider.generate(BASE_SYSTEM_PROMPT, userPrompt);
   }
 
-  async generateDeckSpec(question: string, chunks: RetrievedChunk[]): Promise<DeckSpec> {
+  async generateDeckSpec(
+    question: string,
+    chunks: RetrievedChunk[],
+    preferenceContext?: string | null,
+  ): Promise<DeckSpec> {
     const contextText = formatContext(chunks);
-    const userPrompt = buildDeckPrompt(question, contextText);
+    const userPrompt = buildDeckPrompt(question, contextText, preferenceContext);
     const text = await this.provider.generate(BASE_SYSTEM_PROMPT, userPrompt, {
       maxOutputTokens: 4096,
       temperature: 0.15,
     });
     const json = this.extractJson(text);
     return JSON.parse(json) as DeckSpec;
+  }
+
+  async inferPreferenceProfile(input: {
+    currentProfile: string;
+    question: string;
+    answer: string;
+    mode: string;
+  }): Promise<string | null> {
+    const prompt = buildPreferenceInferencePrompt(input);
+    const text = await this.provider.generate(
+      'You extract durable user style preferences. Return only NO_CHANGE or the updated profile text.',
+      prompt,
+      { maxOutputTokens: 512, temperature: 0.1 },
+    );
+    const cleaned = text.trim();
+    if (!cleaned || /^NO_CHANGE$/i.test(cleaned)) return null;
+    return cleaned.slice(0, 1200);
+  }
+
+  async generateWebResearch(
+    question: string,
+    contextChunks: RetrievedChunk[],
+    preferenceContext?: string | null,
+  ): Promise<GeminiGenerateResult> {
+    const contextText = contextChunks.length ? formatContext(contextChunks) : '';
+    const userPrompt = buildWebResearchPrompt({
+      question,
+      contextText,
+      preferenceContext,
+      currentDate: new Date().toISOString().slice(0, 10),
+    });
+    return this.provider.generateWithGoogleSearch(
+      WEB_RESEARCH_SYSTEM_PROMPT,
+      userPrompt,
+      {
+        maxOutputTokens: 3072,
+        temperature: 0.2,
+      },
+    );
+  }
+
+  streamAnswer(
+    mode: AssistantMode,
+    question: string,
+    chunks: RetrievedChunk[],
+    preferenceContext?: string | null,
+  ): AsyncGenerator<GeminiStreamChunk> {
+    const contextText = formatContext(chunks);
+    const userPrompt = buildUserPrompt(
+      mode,
+      question,
+      contextText,
+      preferenceContext,
+    );
+    return this.provider.stream(BASE_SYSTEM_PROMPT, userPrompt);
+  }
+
+  streamWebResearch(
+    question: string,
+    contextChunks: RetrievedChunk[],
+    preferenceContext?: string | null,
+  ): AsyncGenerator<GeminiStreamChunk> {
+    const contextText = contextChunks.length ? formatContext(contextChunks) : '';
+    const userPrompt = buildWebResearchPrompt({
+      question,
+      contextText,
+      preferenceContext,
+      currentDate: new Date().toISOString().slice(0, 10),
+    });
+    return this.provider.streamWithGoogleSearch(
+      WEB_RESEARCH_SYSTEM_PROMPT,
+      userPrompt,
+      {
+        maxOutputTokens: 3072,
+        temperature: 0.2,
+      },
+    );
   }
 
   private extractJson(text: string): string {
@@ -73,13 +167,25 @@ export class GenerationService {
       seen.add(key);
       sources.push({
         documentId: c.document_id,
-        filename: c.filename,
+        filename: c.source_title || c.filename,
         pageNumber: c.page_number,
         sheetName: c.sheet_name,
         sectionTitle: c.section_title,
         chunkId: c.id,
+        sourceType: c.source_type,
+        url: c.source_url,
+        domain: c.source_url ? this.hostname(c.source_url) : null,
+        retrievedAt: c.retrieved_at,
       });
     }
     return sources;
+  }
+
+  private hostname(value: string): string | null {
+    try {
+      return new URL(value).hostname.replace(/^www\./, '');
+    } catch {
+      return null;
+    }
   }
 }

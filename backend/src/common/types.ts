@@ -4,6 +4,7 @@ export type DocumentStatus = 'uploaded' | 'processing' | 'indexed' | 'failed';
 export type ApprovalStatus = 'approved' | 'pending' | 'rejected';
 export type MessageRole = 'user' | 'assistant' | 'system';
 export type Confidence = 'high' | 'medium' | 'low';
+export type SourceType = 'uploaded_document' | 'web_research';
 
 // Executive output modes (PRD §15.6 / §13.8).
 export const ASSISTANT_MODES = [
@@ -13,14 +14,16 @@ export const ASSISTANT_MODES = [
   'financial_center_benchmark',
   'market_opportunity_analysis',
   'performance_insights',
+  'web_research',
 ] as const;
 export type AssistantMode = (typeof ASSISTANT_MODES)[number];
 
 export interface Conversation {
-  id: string;
-  title: string | null;
-  created_at: string;
-  updated_at: string;
+id: string;
+user_id: string;
+title: string | null;
+created_at: string;
+updated_at: string;
 }
 
 export interface Message {
@@ -38,6 +41,7 @@ export interface DocumentRecord {
   filename: string;
   file_type: string;
   storage_path: string;
+  source_type: SourceType;
   status: DocumentStatus;
   approval_status: ApprovalStatus;
   page_count: number | null;
@@ -86,17 +90,25 @@ export interface RetrievedChunk {
   section_title: string | null;
   filename: string;
   file_type: string;
+  source_type: SourceType;
+  source_url: string | null;
+  source_title: string | null;
+  retrieved_at: string | null;
   similarity: number;
 }
 
 // Source citation returned to the frontend (PRD §15.6).
 export interface Source {
-  documentId: string;
+  documentId: string | null;
   filename: string;
   pageNumber: number | null;
   sheetName: string | null;
   sectionTitle: string | null;
   chunkId: string;
+  sourceType?: SourceType;
+  url?: string | null;
+  domain?: string | null;
+  retrievedAt?: string | null;
 }
 
 export type DeckSlideType =
@@ -154,5 +166,13 @@ export interface DeckSummary {
   sources: Source[];
   confidence: Confidence;
   insufficient: boolean;
-  downloadUrl: string;
+downloadUrl: string;
+}
+
+export interface UserPreferenceProfile {
+user_id: string;
+content: string;
+metadata: Record<string, unknown>;
+created_at: string;
+updated_at: string;
 }

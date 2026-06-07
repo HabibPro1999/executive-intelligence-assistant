@@ -7,11 +7,11 @@ import { ChunkingService } from './src/chunking/chunking.service';
 
 const DIR = path.join(__dirname, '..', 'sample-docs');
 const files: [string, 'pdf' | 'docx' | 'xlsx'][] = [
-  ['ADGM Strategic Priorities 2026.pdf', 'pdf'],
-  ['Market Opportunity Analysis - Digital Assets.pdf', 'pdf'],
-  ['Global Financial Centers Benchmark.xlsx', 'xlsx'],
-  ['Performance Report Q2.xlsx', 'xlsx'],
-  ['Regulatory Trends Summary.docx', 'docx'],
+  ['Northstar Ledger Strategy 2027.pdf', 'pdf'],
+  ['BlueHarbor Payments Expansion Memo.pdf', 'pdf'],
+  ['Meridian Vault Risk Brief.docx', 'docx'],
+  ['QamarPay Product Council Notes.docx', 'docx'],
+  ['Fictional Fintech KPI Dashboard.xlsx', 'xlsx'],
 ];
 
 async function main() {

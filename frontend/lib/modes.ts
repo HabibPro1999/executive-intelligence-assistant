@@ -46,6 +46,24 @@ export const STRATEGY_DECK_ACTION = {
     'Generate a strategy-consulting presentation deck from the uploaded approved documents.',
 } as const;
 
+export const WEB_RESEARCH_ACTIONS: ModeAction[] = [
+  {
+    mode: 'web_research',
+    label: 'Search Competitor',
+    message: 'Search public web sources for recent intelligence on a competitor.',
+  },
+  {
+    mode: 'web_research',
+    label: 'Financial News',
+    message: "Search public web sources for yesterday's financial news and summarize the key signals.",
+  },
+  {
+    mode: 'web_research',
+    label: 'Regulatory Signals',
+    message: 'Search public web sources for recent regulatory or policy signals relevant to financial centers.',
+  },
+];
+
 export const MODE_LABELS: Record<AssistantMode, string> = {
   qa: 'Q&A',
   executive_summary: 'Executive Summary',
@@ -53,6 +71,7 @@ export const MODE_LABELS: Record<AssistantMode, string> = {
   financial_center_benchmark: 'Financial Center Benchmark',
   market_opportunity_analysis: 'Market Opportunity Analysis',
   performance_insights: 'Performance Insights',
+  web_research: 'Web Research',
 };
 
 // Sample questions shown on the empty state (PRD §9 / §25 demo script).

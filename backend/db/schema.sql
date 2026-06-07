@@ -7,11 +7,13 @@ create extension if not exists "pgcrypto"; -- for gen_random_uuid()
 
 -- 1. conversations -----------------------------------------------------------
 create table if not exists conversations (
-  id uuid primary key default gen_random_uuid(),
-  title text,
-  created_at timestamptz default now(),
-  updated_at timestamptz default now()
+id uuid primary key default gen_random_uuid(),
+user_id uuid not null references auth.users(id) on delete cascade,
+title text,
+created_at timestamptz default now(),
+updated_at timestamptz default now()
 );
+create index if not exists idx_conversations_user on conversations(user_id, updated_at desc);
 
 -- 2. messages ----------------------------------------------------------------
 create table if not exists messages (
@@ -31,6 +33,8 @@ create table if not exists documents (
   filename text not null,
   file_type text not null,
   storage_path text not null,
+  source_type text not null default 'uploaded_document'
+    check (source_type in ('uploaded_document', 'web_research')),
   status text not null default 'uploaded'
     check (status in ('uploaded', 'processing', 'indexed', 'failed')),
   approval_status text not null default 'approved'
@@ -43,6 +47,18 @@ create table if not exists documents (
   updated_at timestamptz default now()
 );
 create index if not exists idx_documents_conversation on documents(conversation_id);
+
+alter table documents
+  add column if not exists source_type text not null default 'uploaded_document';
+do $$
+begin
+  alter table documents
+    add constraint documents_source_type_check
+    check (source_type in ('uploaded_document', 'web_research'));
+exception
+  when duplicate_object then null;
+end $$;
+create index if not exists idx_documents_source_type on documents(conversation_id, source_type);
 
 -- 4. document_chunks ---------------------------------------------------------
 create table if not exists document_chunks (
@@ -95,14 +111,28 @@ create table if not exists presentation_decks (
 );
 create index if not exists idx_decks_conversation on presentation_decks(conversation_id, created_at);
 
+create table if not exists user_preference_profiles (
+user_id uuid primary key references auth.users(id) on delete cascade,
+content text not null,
+embedding vector(768),
+metadata jsonb default '{}',
+created_at timestamptz default now(),
+updated_at timestamptz default now()
+);
+create index if not exists idx_user_preference_profiles_embedding
+on user_preference_profiles using hnsw (embedding vector_cosine_ops);
+
 -- 7. similarity search function ---------------------------------------------
 -- Returns the top-k most similar chunks within a single conversation,
 -- restricted to indexed + approved documents (data isolation, PRD §21.2).
 -- similarity is cosine similarity in [0,1]; higher is more relevant.
+drop function if exists match_document_chunks(uuid, vector, int);
+drop function if exists match_document_chunks(uuid, vector, int, text[]);
 create or replace function match_document_chunks(
   p_conversation_id uuid,
   p_query_embedding vector(768),
-  p_match_count int default 10
+  p_match_count int default 10,
+  p_source_types text[] default array['uploaded_document']
 )
 returns table (
   id uuid,
@@ -115,6 +145,10 @@ returns table (
   section_title text,
   filename text,
   file_type text,
+  source_type text,
+  source_url text,
+  source_title text,
+  retrieved_at text,
   similarity float
 )
 language sql stable
@@ -130,12 +164,17 @@ as $$
     c.section_title,
     d.filename,
     d.file_type,
+    d.source_type,
+    coalesce(c.metadata->>'sourceUrl', d.metadata->>'sourceUrl') as source_url,
+    coalesce(c.metadata->>'sourceTitle', d.metadata->>'sourceTitle') as source_title,
+    coalesce(c.metadata->>'retrievedAt', d.metadata->>'retrievedAt') as retrieved_at,
     1 - (c.embedding <=> p_query_embedding) as similarity
   from document_chunks c
   join documents d on d.id = c.document_id
   where c.conversation_id = p_conversation_id
     and d.status = 'indexed'
     and d.approval_status = 'approved'
+    and d.source_type = any(p_source_types)
     and c.embedding is not null
   order by c.embedding <=> p_query_embedding
   limit p_match_count;

@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { config } from '../common/config';
+import { AuthUser } from '../auth/auth.types';
 
 // Wraps the Supabase client. Used only for Storage of original files.
 // (All relational + vector data goes through DatabaseService / pg.)
@@ -60,5 +61,16 @@ export class SupabaseService implements OnModuleInit {
     if (error) {
       throw new Error(`Supabase storage delete failed: ${error.message}`);
     }
+  }
+
+  async getUserFromToken(token: string): Promise<AuthUser> {
+    const { data, error } = await this.client.auth.getUser(token);
+    if (error || !data.user) {
+      throw new Error(error?.message || 'Invalid Supabase access token.');
+    }
+    return {
+      id: data.user.id,
+      email: data.user.email ?? null,
+    };
   }
 }

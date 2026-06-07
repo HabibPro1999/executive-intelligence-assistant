@@ -19,6 +19,7 @@ import { ConversationsService } from '../conversations/conversations.service';
 import { DatabaseService } from '../database/database.service';
 import { DocumentsService } from '../documents/documents.service';
 import { GenerationService } from '../generation/generation.service';
+import { PreferencesService } from '../preferences/preferences.service';
 import { RetrievalService } from '../retrieval/retrieval.service';
 import { PptxDeckRenderer } from './pptx-deck.renderer';
 
@@ -58,23 +59,26 @@ export class DecksService {
     private readonly retrieval: RetrievalService,
     private readonly generation: GenerationService,
     private readonly renderer: PptxDeckRenderer,
+    private readonly preferences: PreferencesService,
   ) {}
 
   async create(
+    userId: string,
     conversationId: string,
     body: CreateDeckRequest = {},
   ): Promise<CreateDeckResponse> {
-    await this.conversations.ensureExists(conversationId);
+    await this.conversations.ensureExists(conversationId, userId);
     const request =
       body.message?.trim() ||
       'Generate a strategy-consulting presentation deck from the approved documents.';
+    const preferenceContext = await this.preferences.retrieveContext(userId, request);
     const userMsg = await this.addMessage(conversationId, 'user', request, {
       mode: 'strategy_deck',
     });
 
-    const knowledge = await this.resolveKnowledgeConversation(conversationId);
+    const knowledge = await this.resolveKnowledgeConversation(userId, conversationId);
     if (knowledge.ok === false) {
-      return this.refuse(conversationId, userMsg.id, knowledge.message);
+      return this.refuse(conversationId, userMsg.id, knowledge.message, [], preferenceContext);
     }
 
     const retrieved = await this.retrieval.retrieve(knowledge.conversationId, request);
@@ -85,12 +89,13 @@ export class DecksService {
         userMsg.id,
         UserMessages.insufficientEvidence,
         retrieved,
+        preferenceContext,
       );
     }
 
     const confidence = this.generation.computeConfidence(relevant);
     const sources = this.generation.toSources(relevant);
-    const deckSpec = await this.buildDeckSpec(request, relevant);
+    const deckSpec = await this.buildDeckSpec(request, relevant, preferenceContext);
     const sourceChunkIds = [...new Set(relevant.map((chunk) => chunk.id))];
 
     const { deck, assistantMsg } = await this.db.withTransaction(async (client) => {
@@ -123,6 +128,7 @@ export class DecksService {
           deck: summary,
           sources,
           confidence,
+          preferenceContext,
           ...knowledge.metadata,
         },
       );
@@ -144,6 +150,16 @@ export class DecksService {
     });
 
     const summary = this.toSummary(conversationId, deck.id, deckSpec, sources, confidence);
+    void this.preferences
+      .learnFromTurn({
+        userId,
+        question: request,
+        answer: `Generated strategy deck: ${deckSpec.title}`,
+        mode: 'strategy_deck',
+      })
+      .catch((err) =>
+        this.logger.warn(`Preference learning skipped: ${err?.message}`),
+      );
     return {
       messageId: assistantMsg.id,
       answer: `Generated strategy deck: ${deckSpec.title}`,
@@ -155,12 +171,16 @@ export class DecksService {
   }
 
   async exportPptx(
+    userId: string,
     conversationId: string,
     deckId: string,
   ): Promise<{ filename: string; buffer: Buffer }> {
     const row = await this.db.one<DeckRecord>(
-      `select * from presentation_decks where id = $1 and conversation_id = $2`,
-      [deckId, conversationId],
+      `select d.*
+         from presentation_decks d
+         join conversations c on c.id = d.conversation_id
+        where d.id = $1 and d.conversation_id = $2 and c.user_id = $3`,
+      [deckId, conversationId, userId],
     );
     if (!row) throw new NotFoundException('Deck not found.');
     const buffer = await this.renderer.render(row.deck_spec);
@@ -173,9 +193,14 @@ export class DecksService {
   private async buildDeckSpec(
     request: string,
     chunks: RetrievedChunk[],
+    preferenceContext?: string | null,
   ): Promise<DeckSpec> {
     try {
-      const generated = await this.generation.generateDeckSpec(request, chunks);
+      const generated = await this.generation.generateDeckSpec(
+        request,
+        chunks,
+        preferenceContext,
+      );
       return this.sanitizeDeckSpec(generated, chunks);
     } catch (err: any) {
       this.logger.error(`Deck generation failed: ${err?.message}`);
@@ -277,15 +302,15 @@ export class DecksService {
     };
   }
 
-  private async resolveKnowledgeConversation(conversationId: string): Promise<
+  private async resolveKnowledgeConversation(userId: string, conversationId: string): Promise<
     | { ok: true; conversationId: string; metadata: Record<string, unknown> }
     | { ok: false; message: string }
   > {
-    const summary = await this.documents.getStatusSummary(conversationId);
+    const summary = await this.documents.getStatusSummary(conversationId, userId);
     if (summary.total === 0) {
       const demoId = config.demoKnowledgeConversationId;
       if (!demoId) return { ok: false, message: UserMessages.noDocuments };
-      const demo = await this.documents.getStatusSummary(demoId).catch(() => null);
+      const demo = await this.documents.getStatusSummary(demoId, userId).catch(() => null);
       if (!demo?.indexed) return { ok: false, message: UserMessages.noDocuments };
       return {
         ok: true,
@@ -313,19 +338,22 @@ export class DecksService {
     userMessageId: string,
     text: string,
     retrieved: RetrievedChunk[] = [],
+    preferenceContext?: string | null,
   ): Promise<CreateDeckResponse> {
+    const answer = this.styleRefusal(text, preferenceContext);
     const assistantMsg = await this.db.withTransaction(async (client) => {
       const msg = await this.addMessageWithClient(
         client,
         conversationId,
         'assistant',
-        text,
+        answer,
         {
           mode: 'strategy_deck',
           deck: null,
           sources: [],
           confidence: 'low',
           insufficient: true,
+          preferenceContext,
         },
       );
       await this.recordDeckRun(client, {
@@ -342,12 +370,27 @@ export class DecksService {
     });
     return {
       messageId: assistantMsg.id,
-      answer: text,
+      answer,
       deck: null,
       sources: [],
       confidence: 'low',
       insufficient: true,
     };
+  }
+
+  private styleRefusal(text: string, preferenceContext?: string | null): string {
+    if (!preferenceContext) return text;
+    if (!/arabic|العربية|عربي/i.test(preferenceContext)) return text;
+    if (text === UserMessages.noDocuments) {
+      return 'لا توجد مستندات معتمدة في هذه المحادثة حتى الآن. يرجى تحميل مستندات ذات صلة كي أنشئ عرضا بناء عليها فقط.';
+    }
+    if (text === UserMessages.documentsProcessing) {
+      return 'ما زالت المستندات قيد الفهرسة. يرجى المحاولة مرة أخرى بعد اكتمال المعالجة.';
+    }
+    if (text === UserMessages.insufficientEvidence) {
+      return 'لا تتضمن المستندات المعتمدة أدلة كافية لإنشاء هذا العرض بثقة. يرجى تحميل مصدر ذي صلة أو تضييق نطاق الطلب.';
+    }
+    return text;
   }
 
   private async addMessage(

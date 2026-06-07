@@ -5,6 +5,8 @@ import { ConversationsModule } from '../conversations/conversations.module';
 import { DocumentsModule } from '../documents/documents.module';
 import { RetrievalModule } from '../retrieval/retrieval.module';
 import { GenerationModule } from '../generation/generation.module';
+import { PreferencesModule } from '../preferences/preferences.module';
+import { WebResearchModule } from '../web-research/web-research.module';
 
 @Module({
   imports: [
@@ -12,6 +14,8 @@ import { GenerationModule } from '../generation/generation.module';
     DocumentsModule,
     RetrievalModule,
     GenerationModule,
+    PreferencesModule,
+    WebResearchModule,
   ],
   controllers: [MessagesController],
   providers: [MessagesService],

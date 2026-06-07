@@ -1,8 +1,20 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, X, BrainCircuit } from 'lucide-react';
-import { AssistantMode, ChatMessage, DocumentRecord } from '@/types';
+import {
+  AlertTriangle,
+  X,
+  BrainCircuit,
+  LogOut,
+  SlidersHorizontal,
+  Loader2,
+} from 'lucide-react';
+import {
+  AssistantMode,
+  ChatMessage,
+  DocumentRecord,
+  UserPreferenceProfile,
+} from '@/types';
 import * as api from '@/lib/api';
 import { clearConversationId } from '@/lib/localConversation';
 import DocumentSidebar from '@/components/documents/DocumentSidebar';
@@ -19,18 +31,28 @@ function normalize(messages: ChatMessage[]): ChatMessage[] {
 }
 
 export default function ChatApp({
-  conversationId,
-  onReset,
+conversationId,
+userId,
+userEmail,
+onReset,
+onSignOut,
 }: {
-  conversationId: string;
-  onReset: () => void;
+conversationId: string;
+userId: string;
+userEmail: string;
+onReset: () => void;
+onSignOut: () => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [sending, setSending] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const pollingRef = useRef(false);
+const [uploading, setUploading] = useState(false);
+const [error, setError] = useState<string | null>(null);
+const [preferencesOpen, setPreferencesOpen] = useState(false);
+const [profile, setProfile] = useState<UserPreferenceProfile | null>(null);
+const [preferencesBusy, setPreferencesBusy] = useState(false);
+const [inputMode, setInputMode] = useState<AssistantMode>('qa');
+const pollingRef = useRef(false);
 
   const anyProcessing = documents.some(
     (d) => d.status === 'processing' || d.status === 'uploaded',
@@ -49,10 +71,10 @@ export default function ChatApp({
         if (!active) return;
         // A stale stored id (server/DB reset, expired/tampered id) returns 404.
         // Recover automatically by dropping it and starting a fresh conversation.
-        if (/not found/i.test(e.message)) {
-          clearConversationId();
-          onReset();
-          return;
+if (/not found/i.test(e.message)) {
+clearConversationId(userId);
+onReset();
+return;
         }
         setError(e.message);
       }
@@ -60,7 +82,30 @@ export default function ChatApp({
     return () => {
       active = false;
     };
-  }, [conversationId]);
+}, [conversationId]);
+
+const loadPreferences = useCallback(async () => {
+setPreferencesBusy(true);
+try {
+setProfile(await api.getPreferenceProfile());
+} catch (e: any) {
+setError(e.message);
+} finally {
+setPreferencesBusy(false);
+}
+}, []);
+
+const resetPreferences = useCallback(async () => {
+setPreferencesBusy(true);
+try {
+await api.resetPreferenceProfile();
+setProfile(null);
+} catch (e: any) {
+setError(e.message);
+} finally {
+setPreferencesBusy(false);
+}
+}, []);
 
   // Poll document status while anything is still indexing (PRD §9.2).
   useEffect(() => {
@@ -101,29 +146,66 @@ export default function ChatApp({
       setMessages((m) => [
         ...m,
         userMsg,
-        { id: pendingId, role: 'assistant', content: '', pending: true },
+        {
+          id: pendingId,
+          role: 'assistant',
+          content: '',
+          pending: true,
+          metadata: { mode, progress: [], streaming: true },
+        },
       ]);
       setSending(true);
       setError(null);
       try {
-        const res = await api.sendMessage(conversationId, text, mode);
-        setMessages((m) =>
-          m.map((msg) =>
-            msg.id === pendingId
-              ? {
-                  id: res.messageId,
-                  role: 'assistant',
-                  content: res.answer,
+        await api.sendMessageStream(conversationId, text, mode, (event) => {
+          if (event.type === 'error') throw new Error(event.message);
+          setMessages((m) =>
+            m.map((msg) => {
+              if (msg.id !== pendingId) return msg;
+              const meta = msg.metadata ?? {};
+              if (event.type === 'status') {
+                const progress = meta.progress ?? [];
+                return {
+                  ...msg,
                   metadata: {
-                    sources: res.sources,
-                    confidence: res.confidence,
-                    mode,
-                    insufficient: res.insufficient,
+                    ...meta,
+                    streaming: true,
+                    progress: progress.includes(event.label)
+                      ? progress
+                      : [...progress, event.label],
                   },
-                }
-              : msg,
-          ),
-        );
+                };
+              }
+              if (event.type === 'delta') {
+                return {
+                  ...msg,
+                  content: `${msg.content}${event.text}`,
+                  metadata: { ...meta, streaming: true },
+                };
+              }
+              if (event.type === 'sources') {
+                return {
+                  ...msg,
+                  metadata: {
+                    ...meta,
+                    sources: event.sources,
+                    confidence: event.confidence,
+                    insufficient: event.insufficient,
+                  },
+                };
+              }
+              if (event.type === 'done') {
+                return {
+                  ...msg,
+                  id: event.messageId,
+                  pending: false,
+                  metadata: { ...meta, streaming: false },
+                };
+              }
+              return msg;
+            }),
+          );
+        });
       } catch (e: any) {
         setMessages((m) =>
           m.map((msg) =>
@@ -132,7 +214,7 @@ export default function ChatApp({
                   ...msg,
                   pending: false,
                   content: `⚠️ ${e.message}`,
-                  metadata: { insufficient: true },
+                  metadata: { insufficient: true, mode, streaming: false },
                 }
               : msg,
           ),
@@ -231,17 +313,67 @@ export default function ChatApp({
       />
 
       <main className="flex h-full flex-1 flex-col">
-        <header className="flex items-center gap-2 border-b border-slate-200 px-6 py-3">
-          <BrainCircuit className="h-5 w-5 text-brand" />
-          <div>
-            <h1 className="text-sm font-semibold leading-tight text-ink">
-              Executive Intelligence Assistant
-            </h1>
-            <p className="text-[11px] text-slate-400">
-              Document-grounded RAG · answers cite your uploaded sources
-            </p>
-          </div>
-        </header>
+<header className="flex items-center gap-2 border-b border-slate-200 px-6 py-3">
+<BrainCircuit className="h-5 w-5 text-brand" />
+<div className="min-w-0 flex-1">
+<h1 className="text-sm font-semibold leading-tight text-ink">
+Executive Intelligence Assistant
+</h1>
+<p className="text-[11px] text-slate-400">
+{userEmail} ·{' '}
+{inputMode === 'web_research'
+  ? 'web research cites public sources'
+  : 'document-grounded answers cite uploaded sources'}
+</p>
+</div>
+<button
+type="button"
+title="Learned preferences"
+onClick={() => {
+setPreferencesOpen((open) => !open);
+if (!preferencesOpen) void loadPreferences();
+}}
+className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+>
+<SlidersHorizontal className="h-4 w-4" />
+</button>
+<button
+type="button"
+title="Sign out"
+onClick={onSignOut}
+className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+>
+<LogOut className="h-4 w-4" />
+</button>
+</header>
+
+{preferencesOpen && (
+<div className="border-b border-slate-200 bg-slate-50 px-6 py-3 text-xs text-slate-600">
+<div className="flex items-start justify-between gap-3">
+<div className="min-w-0">
+<p className="font-semibold text-ink">Learned preferences</p>
+{preferencesBusy ? (
+<p className="mt-2 flex items-center gap-2 text-slate-500">
+<Loader2 className="h-3.5 w-3.5 animate-spin" />
+Loading…
+</p>
+) : (
+<p className="mt-1 whitespace-pre-wrap leading-relaxed">
+{profile?.content || 'No learned preferences yet.'}
+</p>
+)}
+</div>
+<button
+type="button"
+onClick={resetPreferences}
+disabled={preferencesBusy || !profile}
+className="shrink-0 rounded-md border border-slate-300 px-2.5 py-1 font-medium text-slate-600 hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
+>
+Reset
+</button>
+</div>
+</div>
+)}
 
         {error && (
           <div className="flex items-center justify-between gap-2 border-b border-rose-200 bg-rose-50 px-6 py-2 text-xs text-rose-700">
@@ -264,11 +396,13 @@ export default function ChatApp({
         <ExecutiveActionButtons
           onAction={(mode, message) => handleSend(message, mode)}
           onDeck={handleDeck}
-          disabled={sending || anyProcessing}
+          disabled={sending}
         />
         <ChatInput
-          onSend={(t) => handleSend(t, 'qa')}
+          onSend={(t) => handleSend(t, inputMode)}
           onUpload={handleUpload}
+          mode={inputMode}
+          onModeChange={setInputMode}
           disabled={sending}
           busy={sending}
         />

@@ -7,46 +7,46 @@ import { Conversation, DocumentRecord, Message } from '../common/types';
 export class ConversationsService {
   constructor(private readonly db: DatabaseService) {}
 
-  async create(): Promise<Conversation> {
+  async create(userId: string): Promise<Conversation> {
     return this.db.oneOrThrow<Conversation>(
-      `insert into conversations (title) values (null) returning *`,
-      [],
+      `insert into conversations (user_id, title) values ($1, null) returning *`,
+      [userId],
       'Conversation insert returned no row.',
     );
   }
 
-  async get(id: string): Promise<Conversation> {
+  async get(id: string, userId: string): Promise<Conversation> {
     const row = await this.db.one<Conversation>(
-      `select * from conversations where id = $1`,
-      [id],
+      `select * from conversations where id = $1 and user_id = $2`,
+      [id, userId],
     );
     if (!row) throw new ConversationNotFoundError();
     return row;
   }
 
   // Throws if the conversation does not exist (used to guard nested routes).
-  async ensureExists(id: string): Promise<void> {
+  async ensureExists(id: string, userId: string): Promise<void> {
     const row = await this.db.one(
-      `select 1 from conversations where id = $1`,
-      [id],
+      `select 1 from conversations where id = $1 and user_id = $2`,
+      [id, userId],
     );
     if (!row) throw new ConversationNotFoundError();
   }
 
-  async listRecent(limit = 20): Promise<Conversation[]> {
+  async listRecent(userId: string, limit = 20): Promise<Conversation[]> {
     return this.db.rows<Conversation>(
-      `select * from conversations order by updated_at desc limit $1`,
-      [limit],
+      `select * from conversations where user_id = $1 order by updated_at desc limit $2`,
+      [userId, limit],
     );
   }
 
   // Full conversation payload for GET /conversations/:id (PRD §15.3).
-  async getFull(id: string): Promise<{
+  async getFull(id: string, userId: string): Promise<{
     conversation: Conversation;
     messages: Message[];
     documents: DocumentRecord[];
   }> {
-    const conversation = await this.get(id);
+    const conversation = await this.get(id, userId);
     const [messages, documents] = await Promise.all([
       this.db.rows<Message>(
         `select * from messages where conversation_id = $1 order by created_at asc`,

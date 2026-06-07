@@ -44,10 +44,11 @@ export class DocumentsService {
   }
 
   async upload(
+    userId: string,
     conversationId: string,
     file: Express.Multer.File,
   ): Promise<UploadResult> {
-    await this.conversations.ensureExists(conversationId);
+    await this.conversations.ensureExists(conversationId, userId);
 
     if (!file) throw new UnsupportedFileTypeError();
     const fileType = this.detectFileType(file.originalname);
@@ -131,15 +132,19 @@ export class DocumentsService {
     return { documentId: doc.id, filename: doc.filename, status: 'processing' };
   }
 
-  async listByConversation(conversationId: string): Promise<DocumentRecord[]> {
-    await this.conversations.ensureExists(conversationId);
+  async listByConversation(userId: string, conversationId: string): Promise<DocumentRecord[]> {
+    await this.conversations.ensureExists(conversationId, userId);
     return this.db.rows<DocumentRecord>(
       `select * from documents where conversation_id = $1 order by created_at asc`,
       [conversationId],
     );
   }
 
-  async getStatusSummary(conversationId: string): Promise<DocumentStatusSummary> {
+  async getStatusSummary(
+    conversationId: string,
+    userId?: string,
+  ): Promise<DocumentStatusSummary> {
+    if (userId) await this.conversations.ensureExists(conversationId, userId);
     const row = await this.db.one<{
       total: string;
       indexed: string;

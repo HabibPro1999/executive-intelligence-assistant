@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import { EmbeddingsService } from '../embeddings/embeddings.service';
 import { config } from '../common/config';
-import { RetrievedChunk } from '../common/types';
+import { RetrievedChunk, SourceType } from '../common/types';
 
 // Finds the most relevant chunks for a query, scoped to one conversation and
 // to indexed + approved documents only (data isolation, PRD §21.2).
@@ -19,6 +19,7 @@ export class RetrievalService {
     conversationId: string,
     query: string,
     topK: number = config.retrieval.topK,
+    sourceTypes: SourceType[] = ['uploaded_document'],
   ): Promise<RetrievedChunk[]> {
     const queryEmbedding = await this.embeddings.embedQuery(query);
     const literal = DatabaseService.toVectorLiteral(queryEmbedding);
@@ -29,9 +30,9 @@ export class RetrievalService {
     const rows = await this.db.rows<RetrievedChunk>(
       `select id, document_id, conversation_id, chunk_index, content,
               page_number, sheet_name, section_title, filename, file_type,
-              similarity
-         from match_document_chunks($1, $2::vector, $3)`,
-      [conversationId, literal, limit],
+              source_type, source_url, source_title, retrieved_at, similarity
+         from match_document_chunks($1, $2::vector, $3, $4::text[])`,
+      [conversationId, literal, limit, sourceTypes],
     );
 
     this.logger.log(

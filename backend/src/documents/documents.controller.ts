@@ -5,12 +5,17 @@ import {
   Post,
   UploadedFile,
   UseInterceptors,
+  UseGuards,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { CurrentUser } from '../auth/current-user.decorator';
+import { AuthUser } from '../auth/auth.types';
+import { SupabaseJwtGuard } from '../auth/supabase-jwt.guard';
 import { DocumentsService } from './documents.service';
 import { config } from '../common/config';
 
 @Controller('conversations/:conversationId/documents')
+@UseGuards(SupabaseJwtGuard)
 export class DocumentsController {
   constructor(private readonly documents: DocumentsService) {}
 
@@ -23,20 +28,27 @@ export class DocumentsController {
     }),
   )
   upload(
+    @CurrentUser() user: AuthUser,
     @Param('conversationId') conversationId: string,
     @UploadedFile() file: Express.Multer.File,
   ) {
-    return this.documents.upload(conversationId, file);
+    return this.documents.upload(user.id, conversationId, file);
   }
 
   // GET /api/conversations/:conversationId/documents  (PRD §15.5)
   @Get()
-  async list(@Param('conversationId') conversationId: string) {
-    return { documents: await this.documents.listByConversation(conversationId) };
+  async list(
+    @CurrentUser() user: AuthUser,
+    @Param('conversationId') conversationId: string,
+  ) {
+    return { documents: await this.documents.listByConversation(user.id, conversationId) };
   }
 
   @Get('status-summary')
-  async statusSummary(@Param('conversationId') conversationId: string) {
-    return this.documents.getStatusSummary(conversationId);
+  async statusSummary(
+    @CurrentUser() user: AuthUser,
+    @Param('conversationId') conversationId: string,
+  ) {
+    return this.documents.getStatusSummary(conversationId, user.id);
   }
 }
