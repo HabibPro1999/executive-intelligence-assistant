@@ -15,6 +15,30 @@ RAG for executive work. Upload docs. Ask. Get cited answers. Add web research wh
 
 No RBAC. Auth only. Each user gets isolated conversations, documents, history, and learned style preferences.
 
+## Visual Walkthrough
+
+These infographics give a quick recruiter-friendly view of the system before the implementation details.
+
+### System Architecture
+
+![System architecture infographic](frontend/public/infographics/system-architecture.png)
+
+### RAG Core Pipeline
+
+![RAG core pipeline infographic](frontend/public/infographics/rag-core-pipeline.png)
+
+### Document Ingest Pipeline
+
+![Document ingest pipeline infographic](frontend/public/infographics/document-ingest-pipeline.png)
+
+### Answer Pipeline With Query Expansion
+
+![Answer pipeline with query expansion infographic](frontend/public/infographics/answer-query-expansion.png)
+
+### Web Research Guardrail
+
+![Web research and competitor guardrail infographic](frontend/public/infographics/web-research-guardrail.png)
+
 ## Stack
 
 | Layer | Tool |
