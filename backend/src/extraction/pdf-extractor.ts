@@ -24,7 +24,10 @@ export async function extractPdf(buffer: Buffer): Promise<ExtractionResult> {
       });
   }
 
-  const data = await pdfParse(buffer, { pagerender: renderPage });
+  const data = await pdfParse(buffer, {
+    pagerender: renderPage,
+    version: 'v2.0.550',
+  });
 
   const segments: ExtractedSegment[] = pages
     .map((content, i) => ({

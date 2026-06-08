@@ -29,8 +29,10 @@ export class DocumentProcessingService {
     fileType: SupportedFileType,
   ): Promise<void> {
     this.logger.log(`Processing document ${doc.id} (${doc.filename})`);
+    let failureMessage: string = UserMessages.embeddingFailed;
     try {
       // 1. Extract -------------------------------------------------------
+      failureMessage = UserMessages.extractionFailed;
       const extraction = await this.extraction.extract(fileType, buffer);
       await this.db.query(
         `update documents set page_count = $2, sheet_count = $3, updated_at = now() where id = $1`,
@@ -58,6 +60,7 @@ export class DocumentProcessingService {
       }
 
       // 3. Embed ---------------------------------------------------------
+      failureMessage = UserMessages.embeddingFailed;
       const vectors = await this.embeddings.embedDocuments(
         chunks.map((c) => c.content),
       );
@@ -102,8 +105,7 @@ export class DocumentProcessingService {
       );
     } catch (err: any) {
       this.logger.error(`Processing failed for ${doc.id}: ${err?.message}`);
-      const message =
-        err?.response?.message ?? UserMessages.embeddingFailed;
+      const message = err?.response?.message ?? failureMessage;
       await this.fail(doc, message);
     }
   }
