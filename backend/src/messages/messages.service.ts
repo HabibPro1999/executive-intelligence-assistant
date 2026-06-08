@@ -726,7 +726,7 @@ ${instruction}`;
       );
     } catch (err: any) {
       this.logger.warn(`Retrieval planning skipped: ${err?.message}`);
-      return { retrieved, relevant, inferred: false, metadata: directMetadata };
+      plan = this.fallbackRetrievalPlan(question);
     }
 
     const expandedRetrievedGroups: RetrievedChunk[][] = [retrieved];
@@ -739,7 +739,9 @@ ${instruction}`;
         config.retrieval.topK,
       );
       expandedRetrievedGroups.push(queryRetrieved);
-      expandedRelevantGroups.push(this.retrieval.filterRelevant(queryRetrieved));
+      expandedRelevantGroups.push(
+        this.filterExpandedRelevant(queryRetrieved, question, query, plan),
+      );
     }
 
     const expandedRetrieved = this.mergeChunks(...expandedRetrievedGroups);
@@ -771,6 +773,106 @@ ${instruction}`;
 
   private sameQuery(a: string, b: string): boolean {
     return a.trim().toLowerCase() === b.trim().toLowerCase();
+  }
+
+  private fallbackRetrievalPlan(question: string): RetrievalPlan {
+    const intent = this.needsAnalyticalContext(question) ? 'analytical' : 'direct';
+    return {
+      queries: [question, this.broadRetrievalQuery(question)],
+      intent,
+      reason: 'Used deterministic fallback retrieval expansion.',
+    };
+  }
+
+  private broadRetrievalQuery(question: string): string {
+    const subject = question
+      .replace(
+        /\b(what|which|who|are|is|the|main|key|implementation|risks?|and|recommended|recommendations?|next|steps?|for|of|about|should|priorit(?:y|ies|ize|ise)|opportunit(?:y|ies)|implications?|strategy|strategic|roadmap|challenges?|constraints?|trade-?offs?|mitigations?|actions?|implement|infer(?:red)?|analysis|analy[sz]e|assessment|assess|compare|gap)\b/gi,
+        ' ',
+      )
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return `${subject || question} overview profile summary business model product financial highlights KPIs risks opportunities recommendations`;
+  }
+
+  private filterExpandedRelevant(
+    chunks: RetrievedChunk[],
+    question: string,
+    query: string,
+    plan: RetrievalPlan,
+  ): RetrievedChunk[] {
+    const strict = this.retrieval.filterRelevant(chunks);
+    if (strict.length) return strict;
+
+    const candidates = chunks.filter(
+      (chunk) => chunk.similarity >= this.expandedSimilarityThreshold(plan),
+    );
+    if (!candidates.length) return [];
+
+    const anchors = this.anchorTokens(`${question} ${query}`);
+    if (!anchors.length) return candidates;
+    return candidates.filter((chunk) => this.chunkMatchesAnchor(chunk, anchors));
+  }
+
+  private expandedSimilarityThreshold(plan: RetrievalPlan): number {
+    if (plan.intent === 'direct') {
+      return Math.min(config.retrieval.similarityThreshold, 0.35);
+    }
+    return this.analyticalSimilarityThreshold();
+  }
+
+  private anchorTokens(text: string): string[] {
+    const stop = new Set([
+      'what',
+      'whats',
+      'which',
+      'who',
+      'are',
+      'about',
+      'company',
+      'competitor',
+      'competitors',
+      'financial',
+      'financials',
+      'summary',
+      'profile',
+      'business',
+      'model',
+      'product',
+      'description',
+      'sector',
+      'services',
+      'overview',
+      'state',
+    ]);
+    const tokens = text.match(/[\p{L}\p{N}][\p{L}\p{N}'’.-]{1,}/gu) ?? [];
+    const anchors = tokens.filter((token) => {
+      const normalized = this.normalizeToken(token);
+      if (normalized.length < 3 || stop.has(normalized)) return false;
+      return (
+        /[A-Z]{2,}/.test(token) ||
+        /[a-z][A-Z]/.test(token) ||
+        /^[A-Z][a-z]{2,}$/.test(token) ||
+        /\d/.test(token)
+      );
+    });
+    return [...new Set(anchors.map((token) => this.normalizeToken(token)))];
+  }
+
+  private chunkMatchesAnchor(chunk: RetrievedChunk, anchors: string[]): boolean {
+    const haystack = this.normalizeToken(
+      `${chunk.filename} ${chunk.source_title ?? ''} ${chunk.content}`,
+    );
+    return anchors.some((anchor) => haystack.includes(anchor));
+  }
+
+  private normalizeToken(value: string): string {
+    return value
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^\p{L}\p{N}]+/gu, '')
+      .toLowerCase();
   }
 
   private retrievalMetadata(
