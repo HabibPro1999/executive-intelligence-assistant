@@ -67,7 +67,7 @@ export const config = {
   retrieval: {
     topK: num('TOP_K_CHUNKS', 10),
     // Minimum cosine similarity for a chunk to be treated as relevant evidence.
-    similarityThreshold: num('SIMILARITY_THRESHOLD', 0.72),
+    similarityThreshold: num('SIMILARITY_THRESHOLD', 0.5),
   },
 } as const;
 
