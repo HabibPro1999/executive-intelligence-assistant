@@ -8,6 +8,7 @@ import {
 } from '../documents/documents.service';
 import { RetrievalService } from '../retrieval/retrieval.service';
 import { GenerationService } from '../generation/generation.service';
+import { CompetitorResearchPreflight } from '../generation/generation.types';
 import { PreferencesService } from '../preferences/preferences.service';
 import { WebResearchService } from '../web-research/web-research.service';
 import { MODE_DEFAULT_MESSAGE } from '../generation/prompt-templates';
@@ -56,6 +57,14 @@ interface EvidenceSelection {
   retrieved: RetrievedChunk[];
   relevant: RetrievedChunk[];
   inferred: boolean;
+}
+
+interface WebResearchPreparation {
+  question: string;
+  contextChunks: RetrievedChunk[];
+  retrieved: RetrievedChunk[];
+  competitorPreflight?: CompetitorResearchPreflight;
+  clarifyingQuestion?: string;
 }
 
 @Injectable()
@@ -279,21 +288,33 @@ export class MessagesService {
     question: string;
     preferenceContext?: string | null;
   }): Promise<ChatResponse> {
-    const retrieved = await this.retrieval.retrieve(
+    const prepared = await this.prepareWebResearch(
       input.conversationId,
       input.question,
-      config.retrieval.topK,
-      ['uploaded_document', 'web_research'],
     );
-    const relevant = this.retrieval.filterRelevant(retrieved);
+    if (prepared.clarifyingQuestion) {
+      return this.refuse(
+        input.conversationId,
+        input.userMessageId,
+        'web_research',
+        prepared.clarifyingQuestion,
+        prepared.retrieved,
+        input.preferenceContext,
+      );
+    }
+
     const result = await this.webResearch.research({
       conversationId: input.conversationId,
-      question: input.question,
-      contextChunks: relevant,
+      question: prepared.question,
+      contextChunks: prepared.contextChunks,
       preferenceContext: input.preferenceContext,
     });
+    const webResearchMetadata = {
+      ...result.metadata,
+      competitorPreflight: prepared.competitorPreflight,
+    };
 
-    const auditChunks = [...relevant, ...result.savedChunks];
+    const auditChunks = [...prepared.contextChunks, ...result.savedChunks];
     const assistantMsg = await this.db.withTransaction(async (client) => {
       const msg = await this.addWithClient(
         client,
@@ -305,7 +326,7 @@ export class MessagesService {
           confidence: result.confidence,
           mode: 'web_research',
           preferenceContext: input.preferenceContext,
-          webResearch: result.metadata,
+          webResearch: webResearchMetadata,
         },
       );
       await this.recordRunWithClient(client, {
@@ -316,7 +337,7 @@ export class MessagesService {
         modelName: this.generation.modelName,
         chunks: auditChunks,
         confidence: result.confidence,
-        metadata: result.metadata,
+        metadata: webResearchMetadata,
       });
       await this.touchWithClient(client, input.conversationId, input.question);
       return msg;
@@ -477,20 +498,30 @@ export class MessagesService {
     emit: ChatStreamEmit;
   }): Promise<void> {
     input.emit({ type: 'status', label: 'Retrieving conversation context' });
-    const retrieved = await this.retrieval.retrieve(
+    const prepared = await this.prepareWebResearch(
       input.conversationId,
       input.question,
-      config.retrieval.topK,
-      ['uploaded_document', 'web_research'],
+      (label) => input.emit({ type: 'status', label }),
     );
-    const relevant = this.retrieval.filterRelevant(retrieved);
+    if (prepared.clarifyingQuestion) {
+      await this.streamRefuse(
+        input.conversationId,
+        input.userMessageId,
+        'web_research',
+        prepared.clarifyingQuestion,
+        prepared.retrieved,
+        input.preferenceContext,
+        input.emit,
+      );
+      return;
+    }
 
     input.emit({ type: 'status', label: 'Searching public web sources' });
     const result = await this.webResearch.researchStream(
       {
         conversationId: input.conversationId,
-        question: input.question,
-        contextChunks: relevant,
+        question: prepared.question,
+        contextChunks: prepared.contextChunks,
         preferenceContext: input.preferenceContext,
       },
       (text) => input.emit({ type: 'delta', text }),
@@ -505,7 +536,11 @@ export class MessagesService {
     });
     input.emit({ type: 'status', label: 'Saving response' });
 
-    const auditChunks = [...relevant, ...result.savedChunks];
+    const webResearchMetadata = {
+      ...result.metadata,
+      competitorPreflight: prepared.competitorPreflight,
+    };
+    const auditChunks = [...prepared.contextChunks, ...result.savedChunks];
     const assistantMsg = await this.db.withTransaction(async (client) => {
       const msg = await this.addWithClient(
         client,
@@ -517,7 +552,7 @@ export class MessagesService {
           confidence: result.confidence,
           mode: 'web_research',
           preferenceContext: input.preferenceContext,
-          webResearch: result.metadata,
+          webResearch: webResearchMetadata,
         },
       );
       await this.recordRunWithClient(client, {
@@ -528,7 +563,7 @@ export class MessagesService {
         modelName: this.generation.modelName,
         chunks: auditChunks,
         confidence: result.confidence,
-        metadata: result.metadata,
+        metadata: webResearchMetadata,
       });
       await this.touchWithClient(client, input.conversationId, input.question);
       return msg;
@@ -546,6 +581,95 @@ export class MessagesService {
       );
 
     input.emit({ type: 'done', messageId: assistantMsg.id });
+  }
+
+  private async prepareWebResearch(
+    conversationId: string,
+    question: string,
+    emitStatus?: (label: string) => void,
+  ): Promise<WebResearchPreparation> {
+    const retrieved = await this.retrieval.retrieve(
+      conversationId,
+      question,
+      config.retrieval.topK,
+      ['uploaded_document', 'web_research'],
+    );
+    let contextChunks = this.retrieval.filterRelevant(retrieved);
+    let allRetrieved = retrieved;
+
+    if (!this.isCompetitorResearchRequest(question)) {
+      return { question, contextChunks, retrieved: allRetrieved };
+    }
+
+    emitStatus?.('Identifying competitor context');
+    const competitorRetrieved = await this.retrieval.retrieve(
+      conversationId,
+      this.competitorContextQuery(question),
+      Math.max(config.retrieval.topK, 12),
+      ['uploaded_document', 'web_research'],
+    );
+    allRetrieved = this.mergeChunks(retrieved, competitorRetrieved);
+    const competitorContext = competitorRetrieved.filter(
+      (chunk) => chunk.similarity >= this.analyticalSimilarityThreshold(),
+    );
+    contextChunks = this.mergeChunks(contextChunks, competitorContext).slice(
+      0,
+      Math.max(config.retrieval.topK, 12),
+    );
+
+    const competitorPreflight = await this.generation.classifyCompetitorResearch(
+      question,
+      contextChunks,
+    );
+    if (competitorPreflight.shouldAskUser) {
+      return {
+        question,
+        contextChunks,
+        retrieved: allRetrieved,
+        competitorPreflight,
+        clarifyingQuestion:
+          competitorPreflight.clarifyingQuestion ||
+          'Which company or competitors should I research? I do not have enough context in this conversation to identify them reliably.',
+      };
+    }
+
+    return {
+      question: this.competitorResearchQuestion(question, competitorPreflight),
+      contextChunks,
+      retrieved: allRetrieved,
+      competitorPreflight,
+    };
+  }
+
+  private isCompetitorResearchRequest(question: string): boolean {
+    return /\b(competitor|competitors|competitive intelligence|competitive landscape|rival|rivals|competing|market players?|alternatives)\b/i.test(
+      question,
+    );
+  }
+
+  private competitorContextQuery(question: string): string {
+    return `${question} company product market industry sector customers positioning competitors rivals alternatives competitive landscape benchmark`;
+  }
+
+  private competitorResearchQuestion(
+    question: string,
+    preflight: CompetitorResearchPreflight,
+  ): string {
+    const targetLines: string[] = [];
+    if (preflight.companyName) targetLines.push(`Company or market: ${preflight.companyName}`);
+    if (preflight.competitors.length) {
+      targetLines.push(`Competitors to research: ${preflight.competitors.join(', ')}`);
+    }
+    const instruction = preflight.competitors.length
+      ? 'Run live web research for all listed competitors and compare the current signals.'
+      : 'Use live web research to identify relevant competitors for the company or market, then summarize the current signals.';
+
+    return `${question}
+
+Resolved competitor research context:
+${targetLines.join('\n')}
+
+${instruction}`;
   }
 
   private async getDemoKnowledge(userId: string): Promise<{

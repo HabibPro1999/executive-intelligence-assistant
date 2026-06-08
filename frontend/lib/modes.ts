@@ -49,8 +49,9 @@ export const STRATEGY_DECK_ACTION = {
 export const WEB_RESEARCH_ACTIONS: ModeAction[] = [
   {
     mode: 'web_research',
-    label: 'Search Competitor',
-    message: 'Search public web sources for recent intelligence on a competitor.',
+    label: 'Research Competitors',
+    message:
+      'Research competitors using the uploaded context. If you cannot identify them, ask me which competitors to research.',
   },
   {
     mode: 'web_research',

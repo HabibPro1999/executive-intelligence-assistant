@@ -1,8 +1,13 @@
 import { Injectable } from '@nestjs/common';
-import { GenerateResult, StreamChunk } from './generation.types';
+import {
+  CompetitorResearchPreflight,
+  GenerateResult,
+  StreamChunk,
+} from './generation.types';
 import { OpenAiResponsesGenerationProvider } from './openai-responses-generation.provider';
 import {
   BASE_SYSTEM_PROMPT,
+  buildCompetitorResearchPreflightPrompt,
   buildDeckPrompt,
   buildPreferenceInferencePrompt,
   buildUserPrompt,
@@ -95,6 +100,23 @@ export class GenerationService {
     );
   }
 
+  async classifyCompetitorResearch(
+    question: string,
+    contextChunks: RetrievedChunk[],
+  ): Promise<CompetitorResearchPreflight> {
+    const contextText = formatContext(contextChunks);
+    const userPrompt = buildCompetitorResearchPreflightPrompt({
+      question,
+      contextText,
+    });
+    const text = await this.provider.generate(
+      'You classify competitor research requests. Return strict JSON only.',
+      userPrompt,
+      { maxOutputTokens: 800, temperature: 0 },
+    );
+    return this.normalizeCompetitorPreflight(JSON.parse(this.extractJson(text)));
+  }
+
   streamAnswer(
     mode: AssistantMode,
     question: string,
@@ -138,6 +160,42 @@ export class GenerationService {
     const end = trimmed.lastIndexOf('}');
     if (start >= 0 && end > start) return trimmed.slice(start, end + 1);
     return trimmed;
+  }
+
+  private normalizeCompetitorPreflight(value: any): CompetitorResearchPreflight {
+    const reason = [
+      'explicit_competitors_found',
+      'company_context_enough',
+      'insufficient_context',
+    ].includes(value?.reason)
+      ? value.reason
+      : 'insufficient_context';
+    const competitors = Array.isArray(value?.competitors)
+      ? [
+          ...new Set<string>(
+            value.competitors.flatMap((item: unknown) =>
+              typeof item === 'string' && item.trim() ? [item.trim()] : [],
+            ),
+          ),
+        ].slice(0, 12)
+      : [];
+    const companyName =
+      typeof value?.companyName === 'string' && value.companyName.trim()
+        ? value.companyName.trim()
+        : undefined;
+    const shouldAskUser = Boolean(value?.shouldAskUser) || reason === 'insufficient_context';
+    const clarifyingQuestion =
+      typeof value?.clarifyingQuestion === 'string' && value.clarifyingQuestion.trim()
+        ? value.clarifyingQuestion.trim()
+        : undefined;
+
+    return {
+      shouldAskUser,
+      reason,
+      companyName,
+      competitors,
+      clarifyingQuestion,
+    };
   }
 
   // Confidence heuristic (PRD §19).

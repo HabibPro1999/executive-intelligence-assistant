@@ -14,3 +14,16 @@ export interface StreamChunk {
   text?: string;
   groundingMetadata?: GroundingMetadata;
 }
+
+export type CompetitorResearchReason =
+  | 'explicit_competitors_found'
+  | 'company_context_enough'
+  | 'insufficient_context';
+
+export interface CompetitorResearchPreflight {
+  shouldAskUser: boolean;
+  reason: CompetitorResearchReason;
+  companyName?: string;
+  competitors: string[];
+  clarifyingQuestion?: string;
+}

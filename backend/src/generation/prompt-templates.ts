@@ -258,6 +258,36 @@ ${input.contextText || '(none)'}
 User request: ${input.question}`;
 }
 
+export function buildCompetitorResearchPreflightPrompt(input: {
+  question: string;
+  contextText: string;
+}): string {
+  return `Classify whether a competitor web research request has enough target context before live web search.
+
+Return strict JSON only with this shape:
+{
+  "shouldAskUser": boolean,
+  "reason": "explicit_competitors_found" | "company_context_enough" | "insufficient_context",
+  "companyName": string | null,
+  "competitors": string[],
+  "clarifyingQuestion": string | null
+}
+
+Rules:
+1. Use only the user request and prior conversation context below. Do not use outside knowledge.
+2. If the user explicitly named one or more competitors, set reason to "explicit_competitors_found", put those names in competitors, and shouldAskUser=false.
+3. If prior context explicitly names competitors or rivals, set reason to "explicit_competitors_found", put all competitor names in competitors, and shouldAskUser=false.
+4. If the user or prior context identifies the company, product, or market clearly enough to research its competitors, set reason to "company_context_enough", set companyName, include any competitor names found, and shouldAskUser=false.
+5. If neither a company/market nor competitors can be identified reliably, set reason to "insufficient_context", competitors=[], shouldAskUser=true, and ask for the company or competitors.
+6. Keep competitor names exact and de-duplicated. Do not invent competitors.
+
+=== PRIOR CONVERSATION RAG CONTEXT ===
+${input.contextText || '(none)'}
+=== END PRIOR CONTEXT ===
+
+User request: ${input.question}`;
+}
+
 export function formatPreferenceContext(preferenceContext?: string | null): string {
   if (!preferenceContext?.trim()) return '';
   return `=== RETRIEVED USER PREFERENCE CONTEXT (style only, never factual evidence) ===
