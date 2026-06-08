@@ -48,6 +48,12 @@ interface DeckRecord extends QueryResultRow {
   updated_at: string;
 }
 
+interface DeckEvidenceSelection {
+  retrieved: RetrievedChunk[];
+  relevant: RetrievedChunk[];
+  metadata: Record<string, unknown>;
+}
+
 @Injectable()
 export class DecksService {
   private readonly logger = new Logger(DecksService.name);
@@ -81,8 +87,8 @@ export class DecksService {
       return this.refuse(conversationId, userMsg.id, knowledge.message, [], preferenceContext);
     }
 
-    const retrieved = await this.retrieval.retrieve(knowledge.conversationId, request);
-    const relevant = this.retrieval.filterRelevant(retrieved);
+    const evidence = await this.selectDeckEvidence(knowledge.conversationId, request);
+    const { retrieved, relevant } = evidence;
     if (!relevant.length) {
       return this.refuse(
         conversationId,
@@ -129,6 +135,7 @@ export class DecksService {
           sources,
           confidence,
           preferenceContext,
+          ...evidence.metadata,
           ...knowledge.metadata,
         },
       );
@@ -142,6 +149,7 @@ export class DecksService {
         metadata: {
           deck_id: deck.id,
           slide_count: deckSpec.slides.length,
+          ...evidence.metadata,
           ...knowledge.metadata,
         },
       });
@@ -333,6 +341,127 @@ export class DecksService {
     return { ok: true, conversationId, metadata: {} };
   }
 
+  private async selectDeckEvidence(
+    conversationId: string,
+    request: string,
+  ): Promise<DeckEvidenceSelection> {
+    const directRetrieved = await this.retrieval.retrieve(conversationId, request);
+    const directRelevant = this.retrieval.filterRelevant(directRetrieved);
+    if (directRelevant.length >= 4) {
+      return {
+        retrieved: directRetrieved,
+        relevant: directRelevant,
+        metadata: this.deckRetrievalMetadata('direct', [request], directRelevant.length),
+      };
+    }
+
+    const anchors = this.deckAnchorTokens(request);
+    const retrievedGroups = [directRetrieved];
+    const relevantGroups = [directRelevant];
+    const queries = this.deckRetrievalQueries(request);
+    for (const query of queries.slice(1)) {
+      const queryRetrieved = await this.retrieval.retrieve(
+        conversationId,
+        query,
+        Math.max(config.retrieval.topK, 12),
+      );
+      retrievedGroups.push(queryRetrieved);
+      relevantGroups.push(this.filterDeckRelevant(queryRetrieved, anchors));
+    }
+
+    const relevant = this.mergeChunks(...relevantGroups).slice(
+      0,
+      Math.max(config.retrieval.topK, 12),
+    );
+    return {
+      retrieved: this.mergeChunks(...retrievedGroups),
+      relevant,
+      metadata: this.deckRetrievalMetadata('expanded', queries, relevant.length),
+    };
+  }
+
+  private deckRetrievalQueries(request: string): string[] {
+    return [
+      request,
+      'executive summary financial highlights business model product overview market opportunity risks recommendations KPIs',
+      'revenue growth EBITDA gross margin cash flow scenarios risk register management actions',
+      'company profile investment view strategic priorities opportunity analysis performance insights',
+    ].filter((query, index, queries) => queries.findIndex((q) => q === query) === index);
+  }
+
+  private filterDeckRelevant(
+    chunks: RetrievedChunk[],
+    anchors: string[],
+  ): RetrievedChunk[] {
+    const strict = this.retrieval.filterRelevant(chunks);
+    if (strict.length) return strict;
+
+    const candidates = chunks.filter(
+      (chunk) => chunk.similarity >= this.deckSimilarityThreshold(),
+    );
+    if (!anchors.length) return candidates;
+    return candidates.filter((chunk) => this.chunkMatchesAnchor(chunk, anchors));
+  }
+
+  private deckSimilarityThreshold(): number {
+    return Math.min(config.retrieval.similarityThreshold, 0.35);
+  }
+
+  private deckAnchorTokens(text: string): string[] {
+    const stop = new Set([
+      'approved',
+      'based',
+      'consulting',
+      'deck',
+      'document',
+      'documents',
+      'from',
+      'generate',
+      'presentation',
+      'strategy',
+      'uploaded',
+    ]);
+    const tokens = text.match(/[\p{L}\p{N}][\p{L}\p{N}'’.-]{1,}/gu) ?? [];
+    const anchors = tokens.filter((token) => {
+      const normalized = this.normalizeToken(token);
+      if (normalized.length < 3 || stop.has(normalized)) return false;
+      return (
+        /[A-Z]{2,}/.test(token) ||
+        /[a-z][A-Z]/.test(token) ||
+        /^[A-Z][a-z]{2,}$/.test(token) ||
+        /\d/.test(token)
+      );
+    });
+    return [...new Set(anchors.map((token) => this.normalizeToken(token)))];
+  }
+
+  private chunkMatchesAnchor(chunk: RetrievedChunk, anchors: string[]): boolean {
+    const haystack = this.normalizeToken(
+      `${chunk.filename} ${chunk.source_title ?? ''} ${chunk.content}`,
+    );
+    return anchors.some((anchor) => haystack.includes(anchor));
+  }
+
+  private normalizeToken(value: string): string {
+    return value
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^\p{L}\p{N}]+/gu, '')
+      .toLowerCase();
+  }
+
+  private deckRetrievalMetadata(
+    strategy: 'direct' | 'expanded',
+    queries: string[],
+    chunkCount: number,
+  ): Record<string, unknown> {
+    return {
+      retrieval_strategy: strategy,
+      generated_queries: queries,
+      expanded_chunk_count: chunkCount,
+    };
+  }
+
   private async refuse(
     conversationId: string,
     userMessageId: string,
@@ -512,5 +641,16 @@ export class DecksService {
         .replace(/^-|-$/g, '')
         .slice(0, 80) || 'strategy-deck'
     );
+  }
+
+  private mergeChunks(...groups: RetrievedChunk[][]): RetrievedChunk[] {
+    const seen = new Set<string>();
+    const merged: RetrievedChunk[] = [];
+    for (const chunk of groups.flat()) {
+      if (seen.has(chunk.id)) continue;
+      seen.add(chunk.id);
+      merged.push(chunk);
+    }
+    return merged.sort((a, b) => b.similarity - a.similarity);
   }
 }
