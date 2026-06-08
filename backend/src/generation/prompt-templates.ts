@@ -180,21 +180,26 @@ export function buildDeckPrompt(
   contextText: string,
   preferenceContext?: string | null,
 ): string {
-  return `Create a strategy-consulting briefing deck for a Chief Strategy Officer using only the approved document context.
+  return `Create a tier-one strategy-consulting briefing deck for a Chief Strategy Officer using only the approved document context.
 
 Return valid JSON only. Do not wrap it in Markdown. Do not include comments.
 
 Deck requirements:
-- Use a headline-led, pyramid-principle structure.
-- Each slide headline must be a conclusion, not a topic label.
+- Use a headline-led, pyramid-principle structure: answer first, then evidence, then implication.
+- Build a crisp storyline where each slide advances one executive argument.
+- Each slide headline must be an action title: a specific conclusion in 8-14 words, not a topic label.
 - Generate 6-7 slides maximum.
-- Keep slide bullets concise and boardroom-ready: maximum 3 bullets per slide.
+- Keep slide bullets concise and boardroom-ready: maximum 3 bullets per slide, maximum 18 words per bullet.
+- Make recommendations MECE, prioritized, and tied to decision moments.
+- Put quantified facts in visuals when available; otherwise use implication callouts.
 - Keep speakerNotes empty unless a short presenter cue is essential.
 - Do not invent facts, figures, entities, markets, risks, or recommendations.
+- You may infer strategic implications from document evidence, but label inferred ideas in the wording.
 - Every non-title slide must cite one or more source chunk IDs from the context.
 - Use tables only when the context contains structured values.
 - If a chart is not directly supported by numeric context, use a table or callout instead.
-- Do not mention McKinsey or copy any consulting firm branding.
+- Do not mention McKinsey or any consulting firm. Do not copy firm branding.
+- Avoid generic headings like "Strategic Priorities", "Market Opportunity", or "Recommendations" unless the headline also states the conclusion.
 
 ${formatPreferenceContext(preferenceContext)}
 
@@ -224,12 +229,12 @@ JSON schema:
 
 Required slide outline:
 1. Title / context
-2. Executive thesis
-3. Strategic priorities
-4. Market opportunity
-5. Benchmark / competitive position
-6. Performance and risks
-7. Recommended actions
+2. Executive thesis: the single governing answer
+3. Strategic priorities: 3-4 moves that matter most
+4. Market / customer opportunity: where upside concentrates
+5. Operating and financial evidence: what the numbers or plan show
+6. Risks and trade-offs: what could break the plan
+7. Recommended actions: sequenced leadership agenda
 8. Appendix: sources used, if needed
 
 === APPROVED DOCUMENT CONTEXT (the only allowed source of truth) ===
