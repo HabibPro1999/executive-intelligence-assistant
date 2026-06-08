@@ -1,5 +1,5 @@
 // Offline sanity check: runs real extractors + chunking on the sample docs.
-// Does NOT touch Gemini or Supabase. Run: npx ts-node verify-extraction.ts
+// Does NOT touch AI providers or Supabase. Run: npx ts-node verify-extraction.ts
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ExtractionService } from './src/extraction/extraction.service';

@@ -13,6 +13,16 @@ function num(key: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function bool(key: string, fallback = false): boolean {
+  const v = process.env[key];
+  if (v === undefined || v === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(v.toLowerCase());
+}
+
+function baseUrl(key: string, fallback: string): string {
+  return str(key, fallback).replace(/\/$/, '');
+}
+
 export const config = {
   port: num('PORT', 8080),
   // Defaults to the local frontend so dev works out of the box. In production
@@ -32,11 +42,20 @@ export const config = {
   databaseUrl: str('DATABASE_URL'),
   demoKnowledgeConversationId: str('DEMO_KNOWLEDGE_CONVERSATION_ID'),
 
-  gemini: {
-    apiKey: str('GEMINI_API_KEY'),
-    embeddingModel: str('GEMINI_EMBEDDING_MODEL', 'gemini-embedding-2'),
-    generationModel: str('GEMINI_GENERATION_MODEL', 'gemini-2.5-flash-lite'),
-    requestTimeoutMs: num('GEMINI_REQUEST_TIMEOUT_MS', 60_000),
+  ai: {
+    requestTimeoutMs: num('AI_REQUEST_TIMEOUT_MS', 60_000),
+    webResearchEnabled: bool('ENABLE_WEB_RESEARCH', true),
+    generation: {
+      baseUrl: baseUrl('GENERATION_BASE_URL', 'https://api.openai.com/v1'),
+      apiKey: str('OPENAI_API_KEY'),
+      model: str('GENERATION_MODEL', 'gpt-4.1'),
+    },
+    embeddings: {
+      baseUrl: baseUrl('EMBEDDING_BASE_URL', 'https://api.openai.com/v1'),
+      apiKey: str('OPENAI_API_KEY', str('EMBEDDING_API_KEY')),
+      model: str('EMBEDDING_MODEL', 'text-embedding-3-small'),
+      dimensions: num('EMBEDDING_DIMENSIONS', 768),
+    },
   },
 
   limits: {

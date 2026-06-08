@@ -11,7 +11,7 @@ import {
 import { DatabaseService } from '../database/database.service';
 import { EmbeddingsService } from '../embeddings/embeddings.service';
 import { GenerationService } from '../generation/generation.service';
-import { GeminiGroundingMetadata } from '../generation/gemini-generation.provider';
+import { GroundingMetadata } from '../generation/generation.types';
 
 interface WebSource {
   title: string;
@@ -110,7 +110,7 @@ export class WebResearchService {
     onStatus?: (label: string) => void,
   ): Promise<WebResearchResult> {
     let answer = '';
-    let groundingMetadata: GeminiGroundingMetadata | undefined;
+    let groundingMetadata: GroundingMetadata | undefined;
     for await (const chunk of this.generation.streamWebResearch(
       input.question,
       input.contextChunks,
@@ -160,7 +160,7 @@ export class WebResearchService {
   }
 
   private extractSources(
-    metadata: GeminiGroundingMetadata | undefined,
+    metadata: GroundingMetadata | undefined,
     retrievedAt: string,
   ): WebSource[] {
     const seen = new Set<string>();
@@ -185,7 +185,7 @@ export class WebResearchService {
     answer: string;
     sources: WebSource[];
     webSearchQueries: string[];
-    groundingMetadata?: GeminiGroundingMetadata;
+    groundingMetadata?: GroundingMetadata;
     retrievedAt: string;
   }): Promise<RetrievedChunk[]> {
     const finding = this.toFinding(input);

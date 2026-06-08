@@ -1,9 +1,9 @@
 import { Module } from '@nestjs/common';
 import { GenerationService } from './generation.service';
-import { GeminiGenerationProvider } from './gemini-generation.provider';
+import { OpenAiResponsesGenerationProvider } from './openai-responses-generation.provider';
 
 @Module({
-  providers: [GenerationService, GeminiGenerationProvider],
+  providers: [GenerationService, OpenAiResponsesGenerationProvider],
   exports: [GenerationService],
 })
 export class GenerationModule {}

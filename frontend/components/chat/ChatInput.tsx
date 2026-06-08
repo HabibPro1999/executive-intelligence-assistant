@@ -11,6 +11,7 @@ interface Props {
   onModeChange: (mode: AssistantMode) => void;
   disabled?: boolean;
   busy?: boolean;
+  webResearchEnabled?: boolean;
 }
 
 export default function ChatInput({
@@ -20,10 +21,11 @@ export default function ChatInput({
   onModeChange,
   disabled,
   busy,
+  webResearchEnabled = false,
 }: Props) {
   const [value, setValue] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
-  const webMode = mode === 'web_research';
+  const webMode = webResearchEnabled && mode === 'web_research';
 
   const submit = () => {
     const text = value.trim();
@@ -52,16 +54,18 @@ export default function ChatInput({
           <FileText className="h-3.5 w-3.5" />
           Documents
         </button>
-        <button
-          type="button"
-          onClick={() => onModeChange('web_research')}
-          className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 font-medium ${
-            webMode ? 'bg-white text-sky-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          <Globe2 className="h-3.5 w-3.5" />
-          Web Research
-        </button>
+        {webResearchEnabled && (
+          <button
+            type="button"
+            onClick={() => onModeChange('web_research')}
+            className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 font-medium ${
+              webMode ? 'bg-white text-sky-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            <Globe2 className="h-3.5 w-3.5" />
+            Web Research
+          </button>
+        )}
       </div>
       <div className="flex items-end gap-2 rounded-xl border border-slate-300 bg-white px-2 py-1.5 focus-within:border-brand">
         <button

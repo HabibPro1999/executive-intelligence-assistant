@@ -100,6 +100,16 @@ export class MessagesService {
     const preferenceContext = await this.preferences.retrieveContext(userId, question);
 
     if (mode === 'web_research') {
+      if (!config.ai.webResearchEnabled) {
+        return this.refuse(
+          conversationId,
+          userMsg.id,
+          mode,
+          UserMessages.webResearchDisabled,
+          [],
+          preferenceContext,
+        );
+      }
       return this.handleWebResearch({
         userId,
         conversationId,
@@ -221,6 +231,18 @@ export class MessagesService {
 
     const preferenceContext = await this.preferences.retrieveContext(userId, question);
     if (mode === 'web_research') {
+      if (!config.ai.webResearchEnabled) {
+        await this.streamRefuse(
+          conversationId,
+          userMsg.id,
+          mode,
+          UserMessages.webResearchDisabled,
+          [],
+          preferenceContext,
+          emit,
+        );
+        return;
+      }
       await this.handleWebResearchStream({
         userId,
         conversationId,

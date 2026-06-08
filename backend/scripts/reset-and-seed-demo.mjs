@@ -18,11 +18,12 @@ const required = [
   'SUPABASE_SERVICE_ROLE_KEY',
   'SUPABASE_STORAGE_BUCKET',
   'DATABASE_URL',
-  'GEMINI_API_KEY',
 ];
 for (const key of required) {
   if (!process.env[key]) throw new Error(`${key} is required`);
 }
+const embeddingApiKey = process.env.OPENAI_API_KEY || process.env.EMBEDDING_API_KEY;
+if (!embeddingApiKey) throw new Error('OPENAI_API_KEY or EMBEDDING_API_KEY is required');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -214,23 +215,31 @@ async function waitForIndexing(token, conversationId, expected) {
 }
 
 async function embed(text) {
-  const model = process.env.GEMINI_EMBEDDING_MODEL || 'gemini-embedding-2';
-  const url =
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent` +
-    `?key=${process.env.GEMINI_API_KEY}`;
-  const res = await fetch(url, {
+  const baseUrl = (process.env.EMBEDDING_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
+  const model = process.env.EMBEDDING_MODEL || 'text-embedding-3-small';
+  const dimensions = Number(process.env.EMBEDDING_DIMENSIONS || 768);
+  if (dimensions !== 768) {
+    throw new Error(`EMBEDDING_DIMENSIONS=${dimensions} does not match schema vector(768)`);
+  }
+  const res = await fetch(`${baseUrl}/embeddings`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      Authorization: `Bearer ${embeddingApiKey}`,
+      'Content-Type': 'application/json',
+    },
     body: JSON.stringify({
-      model: `models/${model}`,
-      content: { parts: [{ text }] },
-      taskType: 'RETRIEVAL_DOCUMENT',
-      outputDimensionality: 768,
+      model,
+      input: text,
+      dimensions,
     }),
   });
   if (!res.ok) throw new Error(`Preference embedding failed: ${res.status} ${await res.text()}`);
   const data = await res.json();
-  return `[${data.embedding.values.join(',')}]`;
+  const values = data?.data?.[0]?.embedding;
+  if (!Array.isArray(values) || values.length !== dimensions) {
+    throw new Error(`Preference embedding returned invalid dimension (${values?.length ?? 'missing'})`);
+  }
+  return `[${values.join(',')}]`;
 }
 
 async function upsertPreference(userId, content) {

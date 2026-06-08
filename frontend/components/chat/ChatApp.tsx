@@ -24,6 +24,7 @@ import ChatInput from './ChatInput';
 
 let counter = 0;
 const tmpId = () => `tmp-${++counter}-${Date.now()}`;
+const webResearchEnabled = process.env.NEXT_PUBLIC_ENABLE_WEB_RESEARCH !== 'false';
 
 // Keep only renderable roles.
 function normalize(messages: ChatMessage[]): ChatMessage[] {
@@ -321,7 +322,7 @@ Executive Intelligence Assistant
 </h1>
 <p className="text-[11px] text-slate-400">
 {userEmail} ·{' '}
-{inputMode === 'web_research'
+{webResearchEnabled && inputMode === 'web_research'
   ? 'web research cites public sources'
   : 'document-grounded answers cite uploaded sources'}
 </p>
@@ -397,6 +398,7 @@ Reset
           onAction={(mode, message) => handleSend(message, mode)}
           onDeck={handleDeck}
           disabled={sending}
+          webResearchEnabled={webResearchEnabled}
         />
         <ChatInput
           onSend={(t) => handleSend(t, inputMode)}
@@ -405,6 +407,7 @@ Reset
           onModeChange={setInputMode}
           disabled={sending}
           busy={sending}
+          webResearchEnabled={webResearchEnabled}
         />
       </main>
     </div>

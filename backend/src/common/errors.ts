@@ -39,6 +39,8 @@ export const UserMessages = {
     'I could not find enough evidence in the uploaded approved documents to answer this confidently. Please upload a relevant source document or refine your question.',
   liveData:
     'I cannot verify live market information from the current uploaded documents. The initial scope only supports document-grounded analysis. External web research can be added as a future mode.',
+  webResearchDisabled:
+    'Web research is temporarily disabled while the AI provider migration is completed. Please use uploaded documents for now.',
   conversationNotFound: 'Conversation not found.',
 } as const;
 

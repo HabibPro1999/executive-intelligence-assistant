@@ -1,9 +1,9 @@
 import { Module } from '@nestjs/common';
 import { EmbeddingsService } from './embeddings.service';
-import { GeminiEmbeddingsProvider } from './gemini-embeddings.provider';
+import { OpenAiEmbeddingsProvider } from './openai-embeddings.provider';
 
 @Module({
-  providers: [EmbeddingsService, GeminiEmbeddingsProvider],
+  providers: [EmbeddingsService, OpenAiEmbeddingsProvider],
   exports: [EmbeddingsService],
 })
 export class EmbeddingsModule {}

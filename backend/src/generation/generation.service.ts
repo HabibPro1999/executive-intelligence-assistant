@@ -1,9 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import {
-  GeminiGenerateResult,
-  GeminiGenerationProvider,
-  GeminiStreamChunk,
-} from './gemini-generation.provider';
+import { GenerateResult, StreamChunk } from './generation.types';
+import { OpenAiResponsesGenerationProvider } from './openai-responses-generation.provider';
 import {
   BASE_SYSTEM_PROMPT,
   buildDeckPrompt,
@@ -24,10 +21,10 @@ import {
 
 @Injectable()
 export class GenerationService {
-  constructor(private readonly provider: GeminiGenerationProvider) {}
+  constructor(private readonly provider: OpenAiResponsesGenerationProvider) {}
 
   get modelName(): string {
-    return config.gemini.generationModel;
+    return config.ai.generation.model;
   }
 
   // Generate a grounded answer from the retrieved chunks.
@@ -83,21 +80,18 @@ export class GenerationService {
     question: string,
     contextChunks: RetrievedChunk[],
     preferenceContext?: string | null,
-  ): Promise<GeminiGenerateResult> {
-    const contextText = contextChunks.length ? formatContext(contextChunks) : '';
+  ): Promise<GenerateResult> {
+    const contextText = formatContext(contextChunks);
     const userPrompt = buildWebResearchPrompt({
       question,
       contextText,
       preferenceContext,
       currentDate: new Date().toISOString().slice(0, 10),
     });
-    return this.provider.generateWithGoogleSearch(
+    return this.provider.generateWithWebSearch(
       WEB_RESEARCH_SYSTEM_PROMPT,
       userPrompt,
-      {
-        maxOutputTokens: 3072,
-        temperature: 0.2,
-      },
+      { maxOutputTokens: 4096, temperature: 0.2 },
     );
   }
 
@@ -106,7 +100,7 @@ export class GenerationService {
     question: string,
     chunks: RetrievedChunk[],
     preferenceContext?: string | null,
-  ): AsyncGenerator<GeminiStreamChunk> {
+  ): AsyncGenerator<StreamChunk> {
     const contextText = formatContext(chunks);
     const userPrompt = buildUserPrompt(
       mode,
@@ -121,21 +115,18 @@ export class GenerationService {
     question: string,
     contextChunks: RetrievedChunk[],
     preferenceContext?: string | null,
-  ): AsyncGenerator<GeminiStreamChunk> {
-    const contextText = contextChunks.length ? formatContext(contextChunks) : '';
+  ): AsyncGenerator<StreamChunk> {
+    const contextText = formatContext(contextChunks);
     const userPrompt = buildWebResearchPrompt({
       question,
       contextText,
       preferenceContext,
       currentDate: new Date().toISOString().slice(0, 10),
     });
-    return this.provider.streamWithGoogleSearch(
+    return this.provider.streamWithWebSearch(
       WEB_RESEARCH_SYSTEM_PROMPT,
       userPrompt,
-      {
-        maxOutputTokens: 3072,
-        temperature: 0.2,
-      },
+      { maxOutputTokens: 4096, temperature: 0.2 },
     );
   }
 

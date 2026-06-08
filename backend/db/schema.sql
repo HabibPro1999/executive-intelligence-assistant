@@ -1,6 +1,6 @@
 -- Executive Intelligence Assistant — database schema (Supabase Postgres + pgvector)
 -- Run this once against your Supabase project (SQL editor or psql via DATABASE_URL).
--- Embedding dimension is 768 to match Gemini text-embedding-004.
+-- Embedding dimension is 768 to match OpenAI text-embedding-3-small with dimensions=768.
 
 create extension if not exists vector;
 create extension if not exists "pgcrypto"; -- for gen_random_uuid()
