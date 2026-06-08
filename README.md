@@ -77,6 +77,7 @@ question
   -> embed query
   -> match_document_chunks()
   -> filter by approval + source type + similarity
+  -> analytical fallback retrieval when needed
   -> build prompt with retrieved context
   -> GPT-4.1 Responses call
   -> save user + assistant messages
@@ -86,6 +87,27 @@ question
 Default answer modes use uploaded documents only.
 
 If retrieval is weak, the assistant refuses instead of inventing.
+
+Analytical questions get one extra pass:
+
+```text
+risk / next-step / recommendation question
+  -> exact retrieval first
+  -> if too narrow, retrieve broader project scope
+  -> answer from facts + labelled inference
+```
+
+Allowed:
+
+- infer risks from documented modules, actors, workflows, dependencies, and goals
+- recommend next steps derived from uploaded evidence
+- label output as `Document states` vs `Inferred from the documents`
+
+Not allowed:
+
+- present inference as stated fact
+- use outside knowledge in document mode
+- answer with no supporting chunks
 
 ## Web Research Pipeline
 
