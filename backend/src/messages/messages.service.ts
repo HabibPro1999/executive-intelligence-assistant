@@ -52,6 +52,12 @@ export type ChatStreamEvent =
 
 export type ChatStreamEmit = (event: ChatStreamEvent) => void;
 
+interface EvidenceSelection {
+  retrieved: RetrievedChunk[];
+  relevant: RetrievedChunk[];
+  inferred: boolean;
+}
+
 @Injectable()
 export class MessagesService {
   private readonly logger = new Logger(MessagesService.name);
@@ -151,8 +157,8 @@ export class MessagesService {
     }
 
     // Retrieve grounded evidence.
-    const retrieved = await this.retrieval.retrieve(knowledgeConversationId, question);
-    const relevant = this.retrieval.filterRelevant(retrieved);
+    const evidence = await this.selectEvidence(knowledgeConversationId, question);
+    const { retrieved, relevant } = evidence;
     if (relevant.length === 0) {
       return this.refuse(
         conversationId,
@@ -180,6 +186,7 @@ export class MessagesService {
         confidence,
         mode,
         preferenceContext,
+        inferred: evidence.inferred,
         ...knowledgeMetadata,
       });
       await this.recordRunWithClient(client, {
@@ -389,11 +396,11 @@ export class MessagesService {
     }
 
     input.emit({ type: 'status', label: 'Retrieving relevant evidence' });
-    const retrieved = await this.retrieval.retrieve(
+    const evidence = await this.selectEvidence(
       knowledgeConversationId,
       input.question,
     );
-    const relevant = this.retrieval.filterRelevant(retrieved);
+    const { retrieved, relevant } = evidence;
     if (relevant.length === 0) {
       await this.streamRefuse(
         input.conversationId,
@@ -431,6 +438,7 @@ export class MessagesService {
         confidence,
         mode: input.mode,
         preferenceContext: input.preferenceContext,
+        inferred: evidence.inferred,
         ...knowledgeMetadata,
       });
       await this.recordRunWithClient(client, {
@@ -557,6 +565,72 @@ export class MessagesService {
       );
       return null;
     }
+  }
+
+  private async selectEvidence(
+    conversationId: string,
+    question: string,
+  ): Promise<EvidenceSelection> {
+    const retrieved = await this.retrieval.retrieve(conversationId, question);
+    let relevant = this.retrieval.filterRelevant(retrieved);
+    let inferred = false;
+
+    if (!this.needsAnalyticalContext(question) || relevant.length >= 3) {
+      return { retrieved, relevant, inferred };
+    }
+
+    const analyticalRetrieved = await this.retrieval.retrieve(
+      conversationId,
+      this.analyticalRetrievalQuery(question),
+      Math.max(config.retrieval.topK, 12),
+    );
+    const analyticalRelevant = analyticalRetrieved.filter(
+      (chunk) => chunk.similarity >= this.analyticalSimilarityThreshold(),
+    );
+    relevant = this.mergeChunks(relevant, analyticalRelevant).slice(
+      0,
+      config.retrieval.topK,
+    );
+    inferred = relevant.length > 0;
+
+    return {
+      retrieved: this.mergeChunks(retrieved, analyticalRetrieved),
+      relevant,
+      inferred,
+    };
+  }
+
+  private needsAnalyticalContext(question: string): boolean {
+    return /\b(risks?|risk|next steps?|recommend(?:ed|ation|ations)?|should|priorit(?:y|ies|ize|ise)|opportunit(?:y|ies)|implications?|strategy|strategic|roadmap|challenges?|constraints?|trade-?offs?|mitigations?|actions?|implementation|implement|infer(?:red)?|analysis|analy[sz]e|assessment|assess|compare|gap|risques?|recommandations?|priorites?|priorités?|etapes?|étapes?|strategie|stratégie|تحليل|مخاطر|توصيات|خطوات)\b/i.test(
+      question,
+    );
+  }
+
+  private analyticalRetrievalQuery(question: string): string {
+    const subject = question
+      .replace(
+        /\b(what|which|who|are|is|the|main|key|implementation|risks?|and|recommended|recommendations?|next|steps?|for|of|about|should|priorit(?:y|ies|ize|ise)|opportunit(?:y|ies)|implications?|strategy|strategic|roadmap|challenges?|constraints?|trade-?offs?|mitigations?|actions?|implement|infer(?:red)?|analysis|analy[sz]e|assessment|assess|compare|gap)\b/gi,
+        ' ',
+      )
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return `${subject || question} project goals scope modules capabilities workflows users actors requirements expected result operations dependencies payments reservations providers dashboards communication loyalty constraints future evolution`;
+  }
+
+  private analyticalSimilarityThreshold(): number {
+    return Math.min(config.retrieval.similarityThreshold, 0.35);
+  }
+
+  private mergeChunks(...groups: RetrievedChunk[][]): RetrievedChunk[] {
+    const seen = new Set<string>();
+    const merged: RetrievedChunk[] = [];
+    for (const chunk of groups.flat()) {
+      if (seen.has(chunk.id)) continue;
+      seen.add(chunk.id);
+      merged.push(chunk);
+    }
+    return merged.sort((a, b) => b.similarity - a.similarity);
   }
 
   // Store a grounded refusal / insufficient-evidence response.
