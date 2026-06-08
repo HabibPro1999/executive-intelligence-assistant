@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import {
   CompetitorResearchPreflight,
   GenerateResult,
+  RetrievalPlan,
+  RetrievalPlanIntent,
   StreamChunk,
 } from './generation.types';
 import { OpenAiResponsesGenerationProvider } from './openai-responses-generation.provider';
@@ -10,6 +12,7 @@ import {
   buildCompetitorResearchPreflightPrompt,
   buildDeckPrompt,
   buildPreferenceInferencePrompt,
+  buildRetrievalPlanPrompt,
   buildUserPrompt,
   buildWebResearchPrompt,
   formatContext,
@@ -117,6 +120,25 @@ export class GenerationService {
     return this.normalizeCompetitorPreflight(JSON.parse(this.extractJson(text)));
   }
 
+  async planRetrievalQueries(
+    mode: AssistantMode,
+    question: string,
+    contextChunks: RetrievedChunk[],
+  ): Promise<RetrievalPlan> {
+    const contextText = formatContext(contextChunks);
+    const userPrompt = buildRetrievalPlanPrompt({
+      mode,
+      question,
+      contextText,
+    });
+    const text = await this.provider.generate(
+      'You plan retrieval queries for a document-grounded RAG system. Return strict JSON only.',
+      userPrompt,
+      { maxOutputTokens: 700, temperature: 0 },
+    );
+    return this.normalizeRetrievalPlan(JSON.parse(this.extractJson(text)), question);
+  }
+
   streamAnswer(
     mode: AssistantMode,
     question: string,
@@ -196,6 +218,35 @@ export class GenerationService {
       competitors,
       clarifyingQuestion,
     };
+  }
+
+  private normalizeRetrievalPlan(value: any, question: string): RetrievalPlan {
+    const intents: RetrievalPlanIntent[] = [
+      'direct',
+      'analytical',
+      'comparison',
+      'risk',
+      'recommendation',
+    ];
+    const intent = intents.includes(value?.intent) ? value.intent : 'direct';
+    const seen = new Set<string>();
+    const queries = [question, ...(Array.isArray(value?.queries) ? value.queries : [])]
+      .flatMap((item: unknown) =>
+        typeof item === 'string' && item.trim() ? [item.trim()] : [],
+      )
+      .filter((item: string) => {
+        const key = item.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(0, 5);
+    const reason =
+      typeof value?.reason === 'string' && value.reason.trim()
+        ? value.reason.trim().slice(0, 500)
+        : 'Generated retrieval expansion queries.';
+
+    return { queries, intent, reason };
   }
 
   // Confidence heuristic (PRD §19).

@@ -288,6 +288,38 @@ ${input.contextText || '(none)'}
 User request: ${input.question}`;
 }
 
+export function buildRetrievalPlanPrompt(input: {
+  mode: AssistantMode;
+  question: string;
+  contextText: string;
+}): string {
+  return `Generate focused document-retrieval search queries for a RAG system.
+
+Return strict JSON only with this shape:
+{
+  "queries": ["query"],
+  "intent": "direct" | "analytical" | "comparison" | "risk" | "recommendation",
+  "reason": "short retrieval rationale"
+}
+
+Rules:
+1. Queries are only for searching uploaded document chunks. They are not facts and will not be shown as evidence.
+2. Include the original user question as the first query.
+3. Generate at most 5 total queries.
+4. Use short keyword-rich queries likely to match document language.
+5. Cover alternate wording for entities, risks, decisions, KPIs, competitors, constraints, recommendations, and comparisons when relevant.
+6. Do not invent facts, company names, numbers, or source claims.
+7. If the original question is already specific and direct, return only 1-2 queries and intent "direct".
+
+Mode: ${input.mode}
+
+=== INITIAL RETRIEVAL CONTEXT (may be weak or partial) ===
+${input.contextText || '(none)'}
+=== END INITIAL CONTEXT ===
+
+User question: ${input.question}`;
+}
+
 export function formatPreferenceContext(preferenceContext?: string | null): string {
   if (!preferenceContext?.trim()) return '';
   return `=== RETRIEVED USER PREFERENCE CONTEXT (style only, never factual evidence) ===

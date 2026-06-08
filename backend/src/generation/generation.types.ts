@@ -27,3 +27,16 @@ export interface CompetitorResearchPreflight {
   competitors: string[];
   clarifyingQuestion?: string;
 }
+
+export type RetrievalPlanIntent =
+  | 'direct'
+  | 'analytical'
+  | 'comparison'
+  | 'risk'
+  | 'recommendation';
+
+export interface RetrievalPlan {
+  queries: string[];
+  intent: RetrievalPlanIntent;
+  reason: string;
+}

@@ -8,7 +8,10 @@ import {
 } from '../documents/documents.service';
 import { RetrievalService } from '../retrieval/retrieval.service';
 import { GenerationService } from '../generation/generation.service';
-import { CompetitorResearchPreflight } from '../generation/generation.types';
+import {
+  CompetitorResearchPreflight,
+  RetrievalPlan,
+} from '../generation/generation.types';
 import { PreferencesService } from '../preferences/preferences.service';
 import { WebResearchService } from '../web-research/web-research.service';
 import { MODE_DEFAULT_MESSAGE } from '../generation/prompt-templates';
@@ -57,6 +60,7 @@ interface EvidenceSelection {
   retrieved: RetrievedChunk[];
   relevant: RetrievedChunk[];
   inferred: boolean;
+  metadata: Record<string, unknown>;
 }
 
 interface WebResearchPreparation {
@@ -166,7 +170,7 @@ export class MessagesService {
     }
 
     // Retrieve grounded evidence.
-    const evidence = await this.selectEvidence(knowledgeConversationId, question);
+    const evidence = await this.selectEvidence(knowledgeConversationId, question, mode);
     const { retrieved, relevant } = evidence;
     if (relevant.length === 0) {
       return this.refuse(
@@ -176,6 +180,7 @@ export class MessagesService {
         UserMessages.insufficientEvidence,
         retrieved,
         preferenceContext,
+        evidence.metadata,
       );
     }
 
@@ -206,6 +211,7 @@ export class MessagesService {
         modelName: this.generation.modelName,
         chunks: relevant,
         confidence,
+        metadata: evidence.metadata,
       });
       await this.touchWithClient(client, conversationId, question);
       return msg;
@@ -420,6 +426,7 @@ export class MessagesService {
     const evidence = await this.selectEvidence(
       knowledgeConversationId,
       input.question,
+      input.mode,
     );
     const { retrieved, relevant } = evidence;
     if (relevant.length === 0) {
@@ -431,6 +438,7 @@ export class MessagesService {
         retrieved,
         input.preferenceContext,
         input.emit,
+        evidence.metadata,
       );
       return;
     }
@@ -470,6 +478,7 @@ export class MessagesService {
         modelName: this.generation.modelName,
         chunks: relevant,
         confidence,
+        metadata: evidence.metadata,
       });
       await this.touchWithClient(client, input.conversationId, input.question);
       return msg;
@@ -694,33 +703,56 @@ ${instruction}`;
   private async selectEvidence(
     conversationId: string,
     question: string,
+    mode: AssistantMode,
   ): Promise<EvidenceSelection> {
     const retrieved = await this.retrieval.retrieve(conversationId, question);
     let relevant = this.retrieval.filterRelevant(retrieved);
-    let inferred = false;
+    const directMetadata = this.retrievalMetadata('direct', {
+      queries: [question],
+      intent: 'direct',
+      reason: 'Used direct retrieval only.',
+    });
 
-    if (!this.needsAnalyticalContext(question) || relevant.length >= 3) {
-      return { retrieved, relevant, inferred };
+    if (!this.needsAnalyticalContext(question) && relevant.length >= 3) {
+      return { retrieved, relevant, inferred: false, metadata: directMetadata };
     }
 
-    const analyticalRetrieved = await this.retrieval.retrieve(
-      conversationId,
-      this.analyticalRetrievalQuery(question),
-      Math.max(config.retrieval.topK, 12),
-    );
-    const analyticalRelevant = analyticalRetrieved.filter(
-      (chunk) => chunk.similarity >= this.analyticalSimilarityThreshold(),
-    );
-    relevant = this.mergeChunks(relevant, analyticalRelevant).slice(
+    let plan: RetrievalPlan;
+    try {
+      plan = await this.generation.planRetrievalQueries(
+        mode,
+        question,
+        this.retrievalPlanningContext(relevant, retrieved),
+      );
+    } catch (err: any) {
+      this.logger.warn(`Retrieval planning skipped: ${err?.message}`);
+      return { retrieved, relevant, inferred: false, metadata: directMetadata };
+    }
+
+    const expandedRetrievedGroups: RetrievedChunk[][] = [retrieved];
+    const expandedRelevantGroups: RetrievedChunk[][] = [relevant];
+    for (const query of plan.queries.slice(1)) {
+      if (this.sameQuery(query, question)) continue;
+      const queryRetrieved = await this.retrieval.retrieve(
+        conversationId,
+        query,
+        config.retrieval.topK,
+      );
+      expandedRetrievedGroups.push(queryRetrieved);
+      expandedRelevantGroups.push(this.retrieval.filterRelevant(queryRetrieved));
+    }
+
+    const expandedRetrieved = this.mergeChunks(...expandedRetrievedGroups);
+    relevant = this.mergeChunks(...expandedRelevantGroups).slice(
       0,
       config.retrieval.topK,
     );
-    inferred = relevant.length > 0;
 
     return {
-      retrieved: this.mergeChunks(retrieved, analyticalRetrieved),
+      retrieved: expandedRetrieved,
       relevant,
-      inferred,
+      inferred: relevant.length > 0,
+      metadata: this.retrievalMetadata('expanded', plan, relevant.length),
     };
   }
 
@@ -730,16 +762,29 @@ ${instruction}`;
     );
   }
 
-  private analyticalRetrievalQuery(question: string): string {
-    const subject = question
-      .replace(
-        /\b(what|which|who|are|is|the|main|key|implementation|risks?|and|recommended|recommendations?|next|steps?|for|of|about|should|priorit(?:y|ies|ize|ise)|opportunit(?:y|ies)|implications?|strategy|strategic|roadmap|challenges?|constraints?|trade-?offs?|mitigations?|actions?|implement|infer(?:red)?|analysis|analy[sz]e|assessment|assess|compare|gap)\b/gi,
-        ' ',
-      )
-      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-    return `${subject || question} project goals scope modules capabilities workflows users actors requirements expected result operations dependencies payments reservations providers dashboards communication loyalty constraints future evolution`;
+  private retrievalPlanningContext(
+    relevant: RetrievedChunk[],
+    retrieved: RetrievedChunk[],
+  ): RetrievedChunk[] {
+    return (relevant.length ? relevant : retrieved).slice(0, 5);
+  }
+
+  private sameQuery(a: string, b: string): boolean {
+    return a.trim().toLowerCase() === b.trim().toLowerCase();
+  }
+
+  private retrievalMetadata(
+    strategy: 'direct' | 'expanded',
+    plan: RetrievalPlan,
+    expandedChunkCount = 0,
+  ): Record<string, unknown> {
+    return {
+      retrieval_strategy: strategy,
+      generated_queries: plan.queries,
+      query_intent: plan.intent,
+      retrieval_plan_reason: plan.reason,
+      expanded_chunk_count: expandedChunkCount,
+    };
   }
 
   private analyticalSimilarityThreshold(): number {
@@ -765,6 +810,7 @@ ${instruction}`;
     text: string,
     retrieved: RetrievedChunk[] = [],
     preferenceContext?: string | null,
+    metadata?: Record<string, unknown>,
   ): Promise<ChatResponse> {
     const answer = this.styleRefusal(text, preferenceContext);
     const assistantMsg = await this.db.withTransaction(async (client) => {
@@ -783,6 +829,7 @@ ${instruction}`;
         modelName: null,
         chunks: retrieved,
         confidence: 'low',
+        metadata,
       });
       await this.touchWithClient(client, conversationId);
       return msg;
@@ -804,6 +851,7 @@ ${instruction}`;
     retrieved: RetrievedChunk[],
     preferenceContext: string | null | undefined,
     emit: ChatStreamEmit,
+    metadata?: Record<string, unknown>,
   ): Promise<void> {
     emit({ type: 'status', label: 'Saving response' });
     const response = await this.refuse(
@@ -813,6 +861,7 @@ ${instruction}`;
       text,
       retrieved,
       preferenceContext,
+      metadata,
     );
     emit({ type: 'delta', text: response.answer });
     emit({
