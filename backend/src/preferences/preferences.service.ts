@@ -53,9 +53,14 @@ export class PreferencesService {
   ): Promise<void> {
     const cleaned = content.trim();
     if (!cleaned) return;
-    const embedding = DatabaseService.toVectorLiteral(
-      await this.embeddings.embedDocuments([cleaned]).then((rows) => rows[0]),
-    );
+    let embedding: string | null = null;
+    try {
+      embedding = DatabaseService.toVectorLiteral(
+        await this.embeddings.embedDocuments([cleaned]).then((rows) => rows[0]),
+      );
+    } catch (err: any) {
+      this.logger.warn(`Preference embedding skipped: ${err?.message}`);
+    }
     await this.db.query(
       `insert into user_preference_profiles (user_id, content, embedding, metadata)
        values ($1, $2, $3::vector, $4::jsonb)
@@ -66,6 +71,23 @@ export class PreferencesService {
               updated_at = now()`,
       [userId, cleaned, embedding, JSON.stringify(metadata)],
     );
+  }
+
+  async saveExplicitPreference(input: {
+    userId: string;
+    preference: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<string> {
+    const preference = input.preference.replace(/\s+/g, ' ').trim();
+    if (!preference) return '';
+    const current = await this.getProfile(input.userId);
+    const content = this.mergePreference(current?.content, preference);
+    await this.upsertProfile(input.userId, content, {
+      ...(current?.metadata ?? {}),
+      ...(input.metadata ?? {}),
+      learnedBy: 'explicit_user_preference',
+    });
+    return content;
   }
 
   async clearProfile(userId: string): Promise<void> {
@@ -92,5 +114,17 @@ export class PreferencesService {
       learnedBy: 'chat_inference',
       lastMode: input.mode,
     });
+  }
+
+  private mergePreference(current: string | undefined, preference: string): string {
+    const lines = (current ?? '')
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const key = preference.toLowerCase();
+    if (!lines.some((line) => line.toLowerCase() === key)) {
+      lines.push(preference);
+    }
+    return lines.slice(-8).join('\n');
   }
 }

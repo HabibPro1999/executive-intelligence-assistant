@@ -116,6 +116,17 @@ export class MessagesService {
     }
 
     const userMsg = await this.add(conversationId, 'user', question, { mode });
+    const preferenceUpdate = this.preferenceUpdateFrom(question);
+    if (preferenceUpdate) {
+      return this.handlePreferenceUpdate({
+        userId,
+        conversationId,
+        userMessageId: userMsg.id,
+        mode,
+        preference: preferenceUpdate,
+      });
+    }
+
     const preferenceContext = await this.preferences.retrieveContext(userId, question);
 
     if (mode === 'web_research') {
@@ -251,6 +262,27 @@ export class MessagesService {
     const userMsg = await this.add(conversationId, 'user', question, { mode });
     emit({ type: 'message', messageId: userMsg.id, mode });
 
+    const preferenceUpdate = this.preferenceUpdateFrom(question);
+    if (preferenceUpdate) {
+      emit({ type: 'status', label: 'Saving preference' });
+      const response = await this.handlePreferenceUpdate({
+        userId,
+        conversationId,
+        userMessageId: userMsg.id,
+        mode,
+        preference: preferenceUpdate,
+      });
+      emit({ type: 'delta', text: response.answer });
+      emit({
+        type: 'sources',
+        sources: response.sources,
+        confidence: response.confidence,
+        insufficient: response.insufficient,
+      });
+      emit({ type: 'done', messageId: response.messageId });
+      return;
+    }
+
     const preferenceContext = await this.preferences.retrieveContext(userId, question);
     if (mode === 'web_research') {
       if (!config.ai.webResearchEnabled) {
@@ -367,6 +399,107 @@ export class MessagesService {
       confidence: result.confidence,
       insufficient: false,
     };
+  }
+
+  private async handlePreferenceUpdate(input: {
+    userId: string;
+    conversationId: string;
+    userMessageId: string;
+    mode: AssistantMode;
+    preference: string;
+  }): Promise<ChatResponse> {
+    await this.preferences.saveExplicitPreference({
+      userId: input.userId,
+      preference: input.preference,
+      metadata: { lastMode: input.mode },
+    });
+    const answer = this.preferenceSavedAnswer(input.preference);
+    const assistantMsg = await this.db.withTransaction(async (client) => {
+      const msg = await this.addWithClient(
+        client,
+        input.conversationId,
+        'assistant',
+        answer,
+        {
+          sources: [],
+          confidence: 'high' as Confidence,
+          mode: input.mode,
+          preferenceUpdate: true,
+          preference: input.preference,
+        },
+      );
+      await this.recordRunWithClient(client, {
+        conversationId: input.conversationId,
+        userMessageId: input.userMessageId,
+        assistantMessageId: msg.id,
+        mode: input.mode,
+        modelName: null,
+        chunks: [],
+        confidence: 'high',
+        metadata: {
+          preference_update: true,
+          preference: input.preference,
+        },
+      });
+      await this.touchWithClient(client, input.conversationId);
+      return msg;
+    });
+
+    return {
+      messageId: assistantMsg.id,
+      answer,
+      sources: [],
+      confidence: 'high',
+      insufficient: false,
+    };
+  }
+
+  private preferenceUpdateFrom(question: string): string | null {
+    const text = question.replace(/\s+/g, ' ').trim();
+    const lower = text.toLowerCase();
+    const explicit =
+      /\b(i prefer|i like|i want|my preference is|set my preference|remember that i|from now on|always (?:answer|respond|reply|use)|please (?:answer|respond|reply|use)|(?:answer|respond|reply) in)\b/i.test(
+        text,
+      ) || /(?:أفضل|افضل|أريد|اريد|جاوب|أجب|اجب|بالعربية|عربي|العربية)/i.test(text);
+    if (!explicit) return null;
+
+    if (/arabic|العربية|عربي|بالعربية/i.test(text)) {
+      return 'Respond in Arabic by default.';
+    }
+    if (/\b(french|français|francais)\b/i.test(lower)) {
+      return 'Respond in French by default.';
+    }
+    if (/\b(english|anglais)\b/i.test(lower)) {
+      return 'Respond in English by default.';
+    }
+    if (/\b(concise|brief|short|مختصر|قصير)\b/i.test(lower)) {
+      return 'Prefer concise responses.';
+    }
+    if (/\b(detailed|deep|comprehensive|تفصيلي|مفصل)\b/i.test(lower)) {
+      return 'Prefer detailed responses.';
+    }
+    if (/\b(bullets|bullet points|نقاط)\b/i.test(lower)) {
+      return 'Prefer bullet-point responses.';
+    }
+
+    const cleaned = text
+      .replace(
+        /^(please\s+)?(remember that\s+)?(i prefer|i like|i want|my preference is|set my preference to|from now on,?|always|please)/i,
+        '',
+      )
+      .trim();
+    if (!cleaned || cleaned.length < 4 || cleaned.length > 160) return null;
+    return `User preference: ${cleaned}.`;
+  }
+
+  private preferenceSavedAnswer(preference: string): string {
+    if (/arabic|العربية|عربي/i.test(preference)) {
+      return 'تم حفظ التفضيل. سأجيب بالعربية في الردود القادمة.';
+    }
+    if (/french|français|francais/i.test(preference)) {
+      return 'Préférence enregistrée. Je répondrai en français dans les prochaines réponses.';
+    }
+    return 'Preference saved. I will apply it to future responses.';
   }
 
   private async handleDocumentStream(input: {
