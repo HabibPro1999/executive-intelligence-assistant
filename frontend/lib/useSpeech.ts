@@ -74,6 +74,12 @@ export interface UseSpeech {
    * isSpeaking clears after the last slot finishes.
    */
   finishStream: () => void;
+  /**
+   * Speak an instant acknowledgement (e.g. "Let me look through your documents") as the
+   * FIRST utterance, before any answer sentence. Not counted toward SPOKEN_CAP. Call right
+   * after resetQueue(), inside the send gesture.
+   */
+  speakAck: (text: string) => void;
 }
 
 // Tiny silent WAV used to "unlock" the audio element inside a user gesture so a
@@ -90,6 +96,12 @@ const MIN_FIRST = 12;
 const MAX_LEN = 400;
 // Bounded parallel prefetch: number of TTS fetches allowed to race ahead of playback.
 const LOOKAHEAD = 2;
+// Snappy voice: speak only the first N answer sentences (the gist). The full answer
+// keeps rendering on screen — the spoken reply stays conversational, not a read-aloud
+// essay. The acknowledgement (speakAck) does NOT count toward this cap.
+const SPOKEN_CAP = 3;
+// Spoken once the cap is hit, so the voice closes gracefully instead of cutting off.
+const SPOKEN_CLOSER = 'The full answer is on your screen.';
 // Abbreviations whose trailing '.' is NOT a sentence boundary.
 const ABBR = new Set([
   'mr', 'mrs', 'ms', 'dr', 'prof', 'sr', 'jr', 'st', 'vs', 'etc', 'eg', 'ie',
@@ -150,6 +162,10 @@ export function useSpeech(): UseSpeech {
   const authRef = useRef<GetAuthHeader | null>(null);
   const bufferRef = useRef('');
   const firstEmittedRef = useRef(false);
+  // Snappy voice: count of ANSWER sentences voiced this utterance (ack excluded), and
+  // whether the graceful closer has been queued. Both reset per utterance in teardown.
+  const spokenCountRef = useRef(0);
+  const closedRef = useRef(false);
   const queueRef = useRef<QueueState>(freshQueue());
 
   const supported = getRecognitionCtor() !== null;
@@ -492,9 +508,30 @@ export function useSpeech(): UseSpeech {
   // ignoring all guards.
   const drainBuffer = useCallback(
     (force: boolean) => {
+      // Snappy voice: once the spoken cap is reached, stop voicing — the full answer
+      // is already on screen. Drop any buffered remainder.
+      if (spokenCountRef.current >= SPOKEN_CAP) {
+        bufferRef.current = '';
+        return;
+      }
       const buf = bufferRef.current;
       let cut = 0;
       let i = 0;
+      let halt = false;
+      // Emit one answer sentence, counting it toward the cap. On hitting the cap, queue
+      // a graceful closer (once) so the voice doesn't cut mid-thought, then halt.
+      const emit = (text: string) => {
+        enqueueSentence(text);
+        firstEmittedRef.current = true;
+        spokenCountRef.current += 1;
+        if (spokenCountRef.current >= SPOKEN_CAP) {
+          if (!closedRef.current) {
+            enqueueSentence(SPOKEN_CLOSER);
+            closedRef.current = true;
+          }
+          halt = true;
+        }
+      };
       while (i < buf.length) {
         if (isBoundaryChar(buf, i)) {
           // Extend over a contiguous run of terminators so "word.\n\n" collapses to
@@ -523,10 +560,13 @@ export function useSpeech(): UseSpeech {
               continue;
             }
           }
-          enqueueSentence(candidate);
-          firstEmittedRef.current = true;
+          emit(candidate);
           cut = e + 1;
           i = e + 1;
+          if (halt) {
+            bufferRef.current = '';
+            return;
+          }
           continue;
         }
 
@@ -537,14 +577,15 @@ export function useSpeech(): UseSpeech {
           const lastSpace = segment.lastIndexOf(' ');
           const breakAt = lastSpace > 0 ? cut + lastSpace : i;
           const candidate = buf.slice(cut, breakAt).trim();
-          if (candidate.length > 0) {
-            enqueueSentence(candidate);
-            firstEmittedRef.current = true;
-          }
+          if (candidate.length > 0) emit(candidate);
           cut = breakAt;
           // Skip the single break space if we broke on one.
           if (lastSpace > 0) cut += 1;
           i = cut;
+          if (halt) {
+            bufferRef.current = '';
+            return;
+          }
           continue;
         }
         i += 1;
@@ -554,10 +595,7 @@ export function useSpeech(): UseSpeech {
         const remainder = buf.slice(cut).trim();
         // Ignore MIN_FIRST / abbrev guards — this is the end; a tail like "approx."
         // or a sub-12-char remainder must still speak.
-        if (remainder.length > 0) {
-          enqueueSentence(remainder);
-          firstEmittedRef.current = true;
-        }
+        if (remainder.length > 0) emit(remainder);
         bufferRef.current = '';
       } else {
         bufferRef.current = buf.slice(cut);
@@ -573,6 +611,20 @@ export function useSpeech(): UseSpeech {
       drainBuffer(false);
     },
     [drainBuffer],
+  );
+
+  const speakAck = useCallback(
+    (text: string) => {
+      const t = text.trim();
+      if (!t) return;
+      // Instant acknowledgement: queued as the first slot (resetQueue already ran), so
+      // it plays before any answer sentence. Not counted toward SPOKEN_CAP. Marking
+      // firstEmitted means the first real answer sentence skips the MIN_FIRST merge and
+      // speaks as soon as it lands.
+      enqueueSentence(t);
+      firstEmittedRef.current = true;
+    },
+    [enqueueSentence],
   );
 
   const finishStream = useCallback(() => {
@@ -614,6 +666,8 @@ export function useSpeech(): UseSpeech {
     // 4. Clear buffer + slots + counters.
     bufferRef.current = '';
     firstEmittedRef.current = false;
+    spokenCountRef.current = 0;
+    closedRef.current = false;
     queueRef.current = freshQueue();
   }, [stopAudio]);
 
@@ -647,6 +701,7 @@ export function useSpeech(): UseSpeech {
     resetQueue,
     pushStreamText,
     finishStream,
+    speakAck,
   };
 }
 

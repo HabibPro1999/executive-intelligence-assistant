@@ -172,6 +172,12 @@ setPreferencesBusy(false);
       if (speakOn) {
         speech.unlockAudio();
         speech.resetQueue(api.getAuthHeader);
+        // Instant verbal acknowledgement so there's no dead air while the answer streams.
+        speech.speakAck(
+          mode === 'web_research'
+            ? 'Let me search the latest public sources.'
+            : 'Let me look through your documents.',
+        );
       }
       try {
         await api.sendMessageStream(conversationId, text, mode, (event) => {
