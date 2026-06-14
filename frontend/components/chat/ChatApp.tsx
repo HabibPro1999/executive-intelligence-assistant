@@ -163,6 +163,8 @@ setPreferencesBusy(false);
       ]);
       setSending(true);
       setError(null);
+      // Unlock audio within this user gesture so the answer can be spoken on iOS.
+      if (speakOn) speech.unlockAudio();
       let answerText = '';
       try {
         await api.sendMessageStream(conversationId, text, mode, (event) => {

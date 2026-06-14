@@ -52,7 +52,14 @@ export interface UseSpeech {
   stop: () => void;
   isSpeaking: boolean;
   playTts: (text: string, getAuthHeader: GetAuthHeader) => Promise<void>;
+  /** Call from a user gesture (e.g. send click) to allow later programmatic playback on iOS. */
+  unlockAudio: () => void;
 }
+
+// Tiny silent WAV used to "unlock" the audio element inside a user gesture so a
+// later, async-triggered play() (after the answer streams) is allowed on iOS Safari.
+const SILENT_WAV =
+  'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
 
 /**
  * Dependency-free speech hook.
@@ -127,17 +134,42 @@ export function useSpeech(): UseSpeech {
     [stop],
   );
 
+  // One persistent <audio> element, reused for every utterance. Reusing the same
+  // element (rather than `new Audio()` per play) is what lets a gesture-unlocked
+  // element keep playing on iOS after async work.
+  const ensureAudio = useCallback(() => {
+    if (!audioRef.current) audioRef.current = new Audio();
+    return audioRef.current;
+  }, []);
+
+  const unlockAudio = useCallback(() => {
+    const audio = ensureAudio();
+    try {
+      audio.src = SILENT_WAV;
+      const p = audio.play();
+      if (p) {
+        void p
+          .then(() => {
+            audio.pause();
+            audio.currentTime = 0;
+          })
+          .catch(() => {
+            /* gesture not honored yet — best effort */
+          });
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [ensureAudio]);
+
   const stopAudio = useCallback(() => {
     const audio = audioRef.current;
     if (audio) {
-      audio.onended = null;
-      audio.onerror = null;
       try {
         audio.pause();
       } catch {
         /* ignore */
       }
-      audioRef.current = null;
     }
     if (audioUrlRef.current) {
       URL.revokeObjectURL(audioUrlRef.current);
@@ -161,15 +193,12 @@ export function useSpeech(): UseSpeech {
 
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
+        // Reuse the persistent, gesture-unlocked element so iOS allows playback.
+        const audio = ensureAudio();
         audioUrlRef.current = url;
-        audioRef.current = audio;
 
         const cleanup = () => {
-          if (audioRef.current === audio) {
-            audioRef.current = null;
-            setIsSpeaking(false);
-          }
+          setIsSpeaking(false);
           if (audioUrlRef.current === url) {
             URL.revokeObjectURL(url);
             audioUrlRef.current = null;
@@ -178,6 +207,7 @@ export function useSpeech(): UseSpeech {
         audio.onended = cleanup;
         audio.onerror = cleanup;
 
+        audio.src = url;
         setIsSpeaking(true);
         await audio.play();
       } catch {
@@ -185,7 +215,7 @@ export function useSpeech(): UseSpeech {
         stopAudio();
       }
     },
-    [stopAudio],
+    [ensureAudio, stopAudio],
   );
 
   // Clean up recognition and audio on unmount.
@@ -196,7 +226,7 @@ export function useSpeech(): UseSpeech {
     };
   }, [stop, stopAudio]);
 
-  return { supported, isListening, start, stop, isSpeaking, playTts };
+  return { supported, isListening, start, stop, isSpeaking, playTts, unlockAudio };
 }
 
 export default useSpeech;
