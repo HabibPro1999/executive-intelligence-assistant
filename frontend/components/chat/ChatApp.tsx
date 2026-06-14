@@ -8,6 +8,7 @@ import {
   LogOut,
   SlidersHorizontal,
   Loader2,
+  Menu,
 } from 'lucide-react';
 import {
   AssistantMode,
@@ -45,6 +46,7 @@ userEmail: string;
 onReset: () => void;
 onSignOut: () => void;
 }) {
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [sending, setSending] = useState(false);
@@ -325,16 +327,32 @@ setPreferencesBusy(false);
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-white text-ink">
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-black/30 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
       <DocumentSidebar
         documents={documents}
         onUpload={handleUpload}
         onNewConversation={onReset}
         uploading={uploading}
+        isOpen={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
       />
 
-      <main className="flex h-full flex-1 flex-col">
-<header className="flex items-center gap-2 border-b border-slate-200 px-6 py-3">
-<BrainCircuit className="h-5 w-5 text-brand" />
+      <main className="flex h-full min-w-0 flex-1 flex-col">
+<header className="flex items-center gap-2 border-b border-slate-200 px-4 py-3 md:px-6">
+<button
+type="button"
+title="Documents"
+onClick={() => setSidebarOpen(true)}
+className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-700 md:hidden"
+>
+<Menu className="h-4 w-4" />
+</button>
+<BrainCircuit className="hidden h-5 w-5 text-brand md:block" />
 <div className="min-w-0 flex-1">
 <h1 className="text-sm font-semibold leading-tight text-ink">
 Executive Intelligence Assistant

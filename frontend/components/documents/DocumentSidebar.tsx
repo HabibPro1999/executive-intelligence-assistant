@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef } from 'react';
-import { FileText, FileSpreadsheet, FileType, Globe2, Upload, Plus } from 'lucide-react';
+import { FileText, FileSpreadsheet, FileType, Globe2, Upload, Plus, X } from 'lucide-react';
 import { DocumentRecord } from '@/types';
 import DocumentStatusBadge from './DocumentStatusBadge';
 import DemoNotice from '@/components/DemoNotice';
@@ -11,6 +11,8 @@ interface Props {
   onUpload: (files: FileList) => void;
   onNewConversation: () => void;
   uploading?: boolean;
+  isOpen?: boolean;
+  onClose?: () => void;
 }
 
 function FileIcon({ type }: { type: string }) {
@@ -25,21 +27,39 @@ export default function DocumentSidebar({
   onUpload,
   onNewConversation,
   uploading,
+  isOpen = false,
+  onClose,
 }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
 
   return (
-    <aside className="flex h-full w-72 shrink-0 flex-col border-r border-slate-200 bg-slate-50">
+    <aside
+      className={`fixed inset-y-0 left-0 z-40 flex h-full w-72 max-w-[80%] shrink-0 transform flex-col border-r border-slate-200 bg-slate-50 transition-transform duration-200 md:static md:z-auto md:max-w-none md:translate-x-0 ${
+        isOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+      }`}
+    >
       <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
         <h2 className="text-sm font-semibold text-ink">Documents</h2>
-        <button
-          onClick={onNewConversation}
-          title="Start a new conversation"
-          className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-slate-500 hover:bg-slate-200 hover:text-slate-700"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          New
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => {
+              onNewConversation();
+              onClose?.();
+            }}
+            title="Start a new conversation"
+            className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-slate-500 hover:bg-slate-200 hover:text-slate-700"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            New
+          </button>
+          <button
+            onClick={onClose}
+            title="Close"
+            className="rounded-md p-1.5 text-slate-500 hover:bg-slate-200 hover:text-slate-700 md:hidden"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 space-y-2 overflow-y-auto p-3">
