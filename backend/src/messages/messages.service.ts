@@ -28,6 +28,10 @@ import {
 } from '../common/types';
 import { HttpStatus } from '@nestjs/common';
 
+// Cheap model for the additive follow-up suggestions call (sibling of the
+// primary generation model). Kept local so this feature touches no shared config.
+const SUGGESTIONS_MODEL = 'gpt-4.1-mini';
+
 export interface ChatRequest {
   message?: string;
   mode?: string;
@@ -41,6 +45,18 @@ export interface ChatResponse {
   insufficient: boolean;
 }
 
+// Optional KPI chart for in-browser rendering (additive, failure-isolated;
+// sibling of the `suggestions` event). Emitted only when the data clearly
+// supports exactly one chart.
+export interface ChartSpec {
+  kind: 'bar' | 'grouped-bar' | 'line';
+  title: string;
+  xLabel?: string;
+  yLabel?: string;
+  categories: string[];
+  series: Array<{ name: string; values: number[] }>;
+}
+
 export type ChatStreamEvent =
   | { type: 'message'; messageId: string; mode: AssistantMode }
   | { type: 'status'; label: string }
@@ -51,6 +67,8 @@ export type ChatStreamEvent =
       confidence: Confidence;
       insufficient: boolean;
     }
+  | { type: 'suggestions'; items: string[] }
+  | { type: 'chart'; spec: ChartSpec }
   | { type: 'done'; messageId: string }
   | { type: 'error'; message: string };
 
@@ -628,6 +646,13 @@ export class MessagesService {
         this.logger.warn(`Preference learning skipped: ${err?.message}`),
       );
 
+    await this.emitSuggestions(input.question, answer, input.emit);
+    await this.emitChart(
+      input.question,
+      answer,
+      this.chartContext(relevant, answer),
+      input.emit,
+    );
     input.emit({ type: 'done', messageId: assistantMsg.id });
   }
 
@@ -722,6 +747,13 @@ export class MessagesService {
         this.logger.warn(`Preference learning skipped: ${err?.message}`),
       );
 
+    await this.emitSuggestions(input.question, result.answer, input.emit);
+    await this.emitChart(
+      input.question,
+      result.answer,
+      this.chartContext(auditChunks, result.answer),
+      input.emit,
+    );
     input.emit({ type: 'done', messageId: assistantMsg.id });
   }
 
@@ -1106,6 +1138,239 @@ ${instruction}`;
       insufficient: response.insufficient,
     });
     emit({ type: 'done', messageId: response.messageId });
+  }
+
+  // Follow-up suggestions (additive, failure-isolated). Makes ONE cheap extra
+  // OpenAI call for 3 short follow-up questions grounded in the question +
+  // answer, then emits a `suggestions` event. ANY failure is swallowed: it must
+  // never delay-block or break the already-saved answer. This does NOT touch
+  // the main answer generation call or its prompt.
+  private async emitSuggestions(
+    question: string,
+    answer: string,
+    emit: ChatStreamEmit,
+  ): Promise<void> {
+    try {
+      const apiKey = config.ai.generation.apiKey;
+      if (!apiKey) return;
+
+      const instructions =
+        'You generate follow-up questions for an executive intelligence assistant. ' +
+        'Given the user QUESTION and the assistant ANSWER, return exactly 3 short, ' +
+        'specific follow-up questions an executive might ask next, grounded in the ' +
+        'answer and question. Return ONLY a JSON array of 3 strings, nothing else.';
+      const input =
+        `QUESTION:\n${question.slice(0, 2000)}\n\n` +
+        `ANSWER:\n${answer.slice(0, 4000)}`;
+
+      const res = await fetch(`${config.ai.generation.baseUrl}/responses`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        signal: AbortSignal.timeout(config.ai.requestTimeoutMs),
+        body: JSON.stringify({
+          model: SUGGESTIONS_MODEL,
+          instructions,
+          input,
+          temperature: 0.4,
+          max_output_tokens: 256,
+          stream: false,
+        }),
+      });
+      if (!res.ok) {
+        this.logger.warn(`Suggestions skipped: HTTP ${res.status}`);
+        return;
+      }
+
+      const data: any = await res.json();
+      const items = this.parseSuggestions(data);
+      if (items.length) emit({ type: 'suggestions', items });
+    } catch (err: any) {
+      this.logger.warn(`Suggestions skipped: ${err?.message}`);
+    }
+  }
+
+  private parseSuggestions(data: any): string[] {
+    const text =
+      typeof data?.output_text === 'string'
+        ? data.output_text
+        : Array.isArray(data?.output)
+          ? data.output
+              .map((item: any) =>
+                Array.isArray(item?.content)
+                  ? item.content
+                      .map((part: any) =>
+                        typeof part?.text === 'string' ? part.text : '',
+                      )
+                      .join('')
+                  : '',
+              )
+              .join('')
+          : '';
+    if (!text) return [];
+
+    const match = text.match(/\[[\s\S]*\]/);
+    if (!match) return [];
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(match[0]);
+    } catch {
+      return [];
+    }
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+      .map((s) => s.trim())
+      .slice(0, 3);
+  }
+
+  // Optional KPI chart (additive, failure-isolated; mirrors emitSuggestions).
+  // Makes ONE cheap extra OpenAI call: given the QUESTION, the final ANSWER and
+  // whatever numeric/evidence CONTEXT is in scope, decide if the data clearly
+  // supports exactly one chart. If yes, emit a strict ChartSpec; if not, emit
+  // nothing. ANY failure is swallowed and never touches the main answer call.
+  private async emitChart(
+    question: string,
+    answer: string,
+    context: string,
+    emit: ChatStreamEmit,
+  ): Promise<void> {
+    try {
+      const apiKey = config.ai.generation.apiKey;
+      if (!apiKey) return;
+
+      const instructions =
+        'You build at most ONE chart for an executive intelligence assistant. ' +
+        'Given the user QUESTION, the assistant ANSWER and supporting CONTEXT, ' +
+        'decide if the data clearly and unambiguously supports a single chart of ' +
+        'KPIs. Only build a chart when concrete numeric values with clear labels ' +
+        'are present. If the data does not clearly support one chart, return null. ' +
+        'When you do build one, return ONLY a JSON object (no prose) of shape ' +
+        '{"kind":"bar"|"grouped-bar"|"line","title":string,"xLabel"?:string,' +
+        '"yLabel"?:string,"categories":string[],"series":[{"name":string,' +
+        '"values":number[]}]}. Every series.values length MUST equal categories ' +
+        'length. Use at most 12 categories and at most 4 series. If unsure, return null.';
+      const input =
+        `QUESTION:\n${question.slice(0, 2000)}\n\n` +
+        `ANSWER:\n${answer.slice(0, 4000)}\n\n` +
+        `CONTEXT:\n${context.slice(0, 4000)}`;
+
+      const res = await fetch(`${config.ai.generation.baseUrl}/responses`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        signal: AbortSignal.timeout(config.ai.requestTimeoutMs),
+        body: JSON.stringify({
+          model: SUGGESTIONS_MODEL,
+          instructions,
+          input,
+          temperature: 0.2,
+          max_output_tokens: 512,
+          stream: false,
+        }),
+      });
+      if (!res.ok) {
+        this.logger.warn(`Chart skipped: HTTP ${res.status}`);
+        return;
+      }
+
+      const data: any = await res.json();
+      const spec = this.parseChart(data);
+      if (spec) emit({ type: 'chart', spec });
+    } catch (err: any) {
+      this.logger.warn(`Chart skipped: ${err?.message}`);
+    }
+  }
+
+  // Assembles the numeric/evidence context fed to the chart call from the
+  // retrieved chunks in scope; falls back to the answer text when none exist.
+  private chartContext(chunks: RetrievedChunk[], answer: string): string {
+    const text = (Array.isArray(chunks) ? chunks : [])
+      .map((chunk) => chunk?.content)
+      .filter((c): c is string => typeof c === 'string' && c.trim().length > 0)
+      .join('\n\n')
+      .trim();
+    return text || answer;
+  }
+
+  private parseChart(data: any): ChartSpec | null {
+    const text =
+      typeof data?.output_text === 'string'
+        ? data.output_text
+        : Array.isArray(data?.output)
+          ? data.output
+              .map((item: any) =>
+                Array.isArray(item?.content)
+                  ? item.content
+                      .map((part: any) =>
+                        typeof part?.text === 'string' ? part.text : '',
+                      )
+                      .join('')
+                  : '',
+              )
+              .join('')
+          : '';
+    if (!text) return null;
+
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    let parsed: any;
+    try {
+      parsed = JSON.parse(match[0]);
+    } catch {
+      return null;
+    }
+    if (!parsed || typeof parsed !== 'object') return null;
+
+    const allowedKinds = new Set(['bar', 'grouped-bar', 'line']);
+    const kind = allowedKinds.has(parsed.kind) ? parsed.kind : null;
+    if (!kind) return null;
+
+    const title =
+      typeof parsed.title === 'string' && parsed.title.trim()
+        ? parsed.title.trim()
+        : null;
+    if (!title) return null;
+
+    const categories = (Array.isArray(parsed.categories) ? parsed.categories : [])
+      .filter((c: unknown): c is string => typeof c === 'string' && c.trim().length > 0)
+      .map((c: string) => c.trim())
+      .slice(0, 12);
+    if (!categories.length) return null;
+
+    const rawSeries = Array.isArray(parsed.series) ? parsed.series : [];
+    const series: ChartSpec['series'] = [];
+    for (const entry of rawSeries.slice(0, 4)) {
+      if (!entry || typeof entry !== 'object') continue;
+      const name =
+        typeof entry.name === 'string' && entry.name.trim()
+          ? entry.name.trim()
+          : `Series ${series.length + 1}`;
+      const rawValues = Array.isArray(entry.values) ? entry.values : [];
+      const values = rawValues.map((v: unknown) => {
+        const n = typeof v === 'number' ? v : Number(v);
+        return Number.isFinite(n) ? n : NaN;
+      });
+      // Drop the chart if any series has no valid numbers or a length mismatch.
+      if (!values.some((v: number) => Number.isFinite(v))) return null;
+      if (values.length !== categories.length) return null;
+      if (values.some((v: number) => !Number.isFinite(v))) return null;
+      series.push({ name, values });
+    }
+    if (!series.length) return null;
+
+    const spec: ChartSpec = { kind, title, categories, series };
+    if (typeof parsed.xLabel === 'string' && parsed.xLabel.trim()) {
+      spec.xLabel = parsed.xLabel.trim();
+    }
+    if (typeof parsed.yLabel === 'string' && parsed.yLabel.trim()) {
+      spec.yLabel = parsed.yLabel.trim();
+    }
+    return spec;
   }
 
   private styleRefusal(text: string, preferenceContext?: string | null): string {

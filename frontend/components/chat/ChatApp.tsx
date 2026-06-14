@@ -16,6 +16,7 @@ import {
   UserPreferenceProfile,
 } from '@/types';
 import * as api from '@/lib/api';
+import { useSpeech } from '@/lib/useSpeech';
 import { clearConversationId } from '@/lib/localConversation';
 import DocumentSidebar from '@/components/documents/DocumentSidebar';
 import ExecutiveActionButtons from '@/components/actions/ExecutiveActionButtons';
@@ -53,6 +54,9 @@ const [preferencesOpen, setPreferencesOpen] = useState(false);
 const [profile, setProfile] = useState<UserPreferenceProfile | null>(null);
 const [preferencesBusy, setPreferencesBusy] = useState(false);
 const [inputMode, setInputMode] = useState<AssistantMode>('qa');
+// Voice: speech hook + autoplay toggle (default ON for the demo).
+const speech = useSpeech();
+const [speakOn, setSpeakOn] = useState(true);
 const pollingRef = useRef(false);
 
   const anyProcessing = documents.some(
@@ -157,17 +161,26 @@ setPreferencesBusy(false);
       ]);
       setSending(true);
       setError(null);
+      let answerText = '';
       try {
         await api.sendMessageStream(conversationId, text, mode, (event) => {
           if (event.type === 'error') throw new Error(event.message);
+          if (event.type === 'delta') answerText += event.text;
+          if (event.type === 'done' && speakOn && answerText.trim()) {
+            void speech.playTts(answerText, api.getAuthHeader);
+          }
           setMessages((m) =>
             m.map((msg) => {
               if (msg.id !== pendingId) return msg;
               const meta = msg.metadata ?? {};
               if (event.type === 'status') {
                 const progress = meta.progress ?? [];
+                const steps = msg.steps ?? [];
                 return {
                   ...msg,
+                  steps: steps.includes(event.label)
+                    ? steps
+                    : [...steps, event.label],
                   metadata: {
                     ...meta,
                     streaming: true,
@@ -194,6 +207,12 @@ setPreferencesBusy(false);
                     insufficient: event.insufficient,
                   },
                 };
+              }
+              if (event.type === 'suggestions') {
+                return { ...msg, suggestions: event.items };
+              }
+              if (event.type === 'chart') {
+                return { ...msg, chart: event.spec };
               }
               if (event.type === 'done') {
                 return {
@@ -225,7 +244,7 @@ setPreferencesBusy(false);
         setSending(false);
       }
     },
-    [conversationId, sending],
+    [conversationId, sending, speakOn, speech],
   );
 
   const handleUpload = useCallback(
@@ -392,6 +411,7 @@ Reset
           messages={messages}
           hasDocuments={documents.length > 0}
           onSample={(q) => handleSend(q, 'qa')}
+          onPickFollowUp={(q) => handleSend(q, 'qa')}
         />
 
         <ExecutiveActionButtons
@@ -408,6 +428,12 @@ Reset
           disabled={sending}
           busy={sending}
           webResearchEnabled={webResearchEnabled}
+          micSupported={speech.supported}
+          isListening={speech.isListening}
+          onStartListening={speech.start}
+          onStopListening={speech.stop}
+          speakOn={speakOn}
+          onToggleSpeak={() => setSpeakOn((on) => !on)}
         />
       </main>
     </div>

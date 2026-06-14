@@ -10,9 +10,15 @@ interface Props {
   messages: ChatMessage[];
   hasDocuments: boolean;
   onSample: (q: string) => void;
+  onPickFollowUp: (q: string) => void;
 }
 
-export default function ChatWindow({ messages, hasDocuments, onSample }: Props) {
+export default function ChatWindow({
+  messages,
+  hasDocuments,
+  onSample,
+  onPickFollowUp,
+}: Props) {
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -53,7 +59,7 @@ export default function ChatWindow({ messages, hasDocuments, onSample }: Props) 
   return (
     <div className="flex-1 space-y-4 overflow-y-auto px-4 py-5 md:px-8">
       {messages.map((m) => (
-        <MessageBubble key={m.id} message={m} />
+        <MessageBubble key={m.id} message={m} onPickFollowUp={onPickFollowUp} />
       ))}
       <div ref={endRef} />
     </div>

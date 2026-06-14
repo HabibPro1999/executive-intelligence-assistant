@@ -27,10 +27,21 @@ export interface CreateDeckRequest {
   message?: string;
 }
 
+// In-browser preview slide shape (additive; mirrors the structured DeckSpec
+// slides before pptx rendering). Lives alongside the existing DeckSummary in
+// the HTTP response — does not affect pptx generation or the download route.
+export interface DeckSlidePreview {
+  title: string;
+  subtitle?: string;
+  bullets?: string[];
+  kind?: string;
+}
+
 export interface CreateDeckResponse {
   messageId: string;
   answer: string;
   deck: DeckSummary | null;
+  slides: DeckSlidePreview[];
   sources: Source[];
   confidence: Confidence;
   insufficient: boolean;
@@ -172,6 +183,7 @@ export class DecksService {
       messageId: assistantMsg.id,
       answer: `Generated strategy deck: ${deckSpec.title}`,
       deck: summary,
+      slides: this.mapDeckSlides(deckSpec),
       sources,
       confidence,
       insufficient: false,
@@ -501,6 +513,7 @@ export class DecksService {
       messageId: assistantMsg.id,
       answer,
       deck: null,
+      slides: [],
       sources: [],
       confidence: 'low',
       insufficient: true,
@@ -625,6 +638,25 @@ export class DecksService {
       insufficient: false,
       downloadUrl: `/api/conversations/${conversationId}/decks/${deckId}/download`,
     };
+  }
+
+  // Best-effort map of the structured DeckSpec slides into the lightweight
+  // preview shape used for in-browser rendering. Purely additive; never throws.
+  private mapDeckSlides(spec: DeckSpec): DeckSlidePreview[] {
+    if (!spec || !Array.isArray(spec.slides)) return [];
+    return spec.slides.map((slide) => {
+      const preview: DeckSlidePreview = {
+        title: this.clean(slide?.headline, 'Executive insight'),
+        kind: slide?.type,
+      };
+      const subtitle = this.clean(slide?.keyMessage, '');
+      if (subtitle) preview.subtitle = subtitle;
+      const bullets = (Array.isArray(slide?.bullets) ? slide.bullets : [])
+        .map((bullet) => this.clean(bullet, ''))
+        .filter(Boolean);
+      if (bullets.length) preview.bullets = bullets;
+      return preview;
+    });
   }
 
   private clean(value: unknown, fallback: string): string {

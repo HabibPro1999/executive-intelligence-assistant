@@ -7,6 +7,7 @@ import { DocumentsModule } from './documents/documents.module';
 import { MessagesModule } from './messages/messages.module';
 import { DecksModule } from './decks/decks.module';
 import { PreferencesModule } from './preferences/preferences.module';
+import { SpeechModule } from './speech/speech.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { PreferencesModule } from './preferences/preferences.module';
     MessagesModule,
     DecksModule,
     PreferencesModule,
+    SpeechModule,
   ],
   controllers: [AppController],
 })

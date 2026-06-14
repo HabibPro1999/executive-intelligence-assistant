@@ -1,5 +1,10 @@
 // Shared frontend types, mirroring the backend API contract (PRD §15).
 
+// Feature D — KPI chart spec, re-exported from the ChartBlock unit so the
+// stream event and ChatMessage can reference a single source of truth.
+export type { ChartSpec } from '@/components/chat/ChartBlock';
+import type { ChartSpec } from '@/components/chat/ChartBlock';
+
 export type MessageRole = 'user' | 'assistant' | 'system';
 export type Confidence = 'high' | 'medium' | 'low';
 export type DocumentStatus = 'uploaded' | 'processing' | 'indexed' | 'failed';
@@ -43,6 +48,12 @@ export interface ChatMessage {
     insufficient?: boolean;
     deck?: DeckSummary | null;
   };
+  // Reasoning-trace step labels (status events), shown via ThinkingTrace.
+  steps?: string[];
+  // Optional best-effort follow-up suggestions emitted just before 'done'.
+  suggestions?: string[];
+  // Optional best-effort KPI chart emitted just before 'done' (Feature D).
+  chart?: ChartSpec;
   // Local-only flag for the in-flight assistant placeholder.
   pending?: boolean;
 }
@@ -85,6 +96,8 @@ export type ChatStreamEvent =
       confidence: Confidence;
       insufficient: boolean;
     }
+  | { type: 'suggestions'; items: string[] }
+  | { type: 'chart'; spec: ChartSpec }
   | { type: 'done'; messageId: string }
   | { type: 'error'; message: string };
 
@@ -101,11 +114,23 @@ export interface DeckSlideSummary {
   keyMessage: string;
 }
 
+// Feature C — richer per-slide preview, returned at the top level of the
+// createDeck response and surfaced into DeckSummary.previewSlides by api.ts.
+export interface DeckPreviewSlide {
+  title: string;
+  subtitle?: string;
+  bullets?: string[];
+  kind?: string;
+}
+
 export interface DeckSummary {
   deckId: string;
   title: string;
   thesis: string;
   slides: DeckSlideSummary[];
+  // Optional rich preview slides (Feature C); copied from the createDeck
+  // response's top-level `slides` field. Empty/absent on refusal.
+  previewSlides?: DeckPreviewSlide[];
   sources: Source[];
   confidence: Confidence;
   insufficient: boolean;
@@ -116,6 +141,7 @@ export interface DeckCreateResponse {
 messageId: string;
 answer: string;
 deck: DeckSummary | null;
+slides?: DeckPreviewSlide[];
 sources: Source[];
 confidence: Confidence;
 insufficient: boolean;

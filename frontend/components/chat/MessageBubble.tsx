@@ -3,11 +3,15 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useState } from 'react';
-import { Download, FileSliders, Loader2 } from 'lucide-react';
+import { Download, Eye, FileSliders, Loader2 } from 'lucide-react';
 import { ChatMessage, DeckSummary } from '@/types';
 import { downloadDeck } from '@/lib/api';
 import ConfidenceBadge from '@/components/ConfidenceBadge';
 import SourceList from './SourceList';
+import ThinkingTrace from './ThinkingTrace';
+import FollowUpChips from './FollowUpChips';
+import ChartBlock from './ChartBlock';
+import DeckPreview from './DeckPreview';
 
 function ProgressList({
   steps,
@@ -46,6 +50,10 @@ function ProgressList({
 function DeckCard({ deck }: { deck: DeckSummary }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+
+  const previewSlides = deck.previewSlides ?? [];
+  const canPreview = previewSlides.length > 0;
 
   const download = async () => {
     setBusy(true);
@@ -70,21 +78,41 @@ function DeckCard({ deck }: { deck: DeckSummary }) {
           <h3 className="mt-1 text-sm font-semibold text-ink">{deck.title}</h3>
           <p className="mt-1 text-xs leading-relaxed text-slate-600">{deck.thesis}</p>
         </div>
-        <button
-          type="button"
-          onClick={download}
-          disabled={busy}
-          className="inline-flex shrink-0 items-center gap-1 rounded-md bg-brand px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-brand/90"
-        >
-          {busy ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Download className="h-3.5 w-3.5" />
+        <div className="flex shrink-0 items-center gap-1.5">
+          {canPreview && (
+            <button
+              type="button"
+              onClick={() => setPreviewOpen(true)}
+              className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+            >
+              <Eye className="h-3.5 w-3.5" />
+              Preview
+            </button>
           )}
-          PPTX
-        </button>
+          <button
+            type="button"
+            onClick={download}
+            disabled={busy}
+            className="inline-flex items-center gap-1 rounded-md bg-brand px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-brand/90"
+          >
+            {busy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Download className="h-3.5 w-3.5" />
+            )}
+            PPTX
+          </button>
+        </div>
       </div>
       {error && <p className="text-xs text-rose-600">{error}</p>}
+      {previewOpen && canPreview && (
+        <DeckPreview
+          title={deck.title}
+          slides={previewSlides}
+          onClose={() => setPreviewOpen(false)}
+          onDownload={download}
+        />
+      )}
       <div className="space-y-1">
         {deck.slides.slice(0, 8).map((slide, i) => (
           <div key={`${slide.type}-${i}`} className="flex gap-2 text-xs">
@@ -97,9 +125,16 @@ function DeckCard({ deck }: { deck: DeckSummary }) {
   );
 }
 
-export default function MessageBubble({ message }: { message: ChatMessage }) {
+export default function MessageBubble({
+  message,
+  onPickFollowUp,
+}: {
+  message: ChatMessage;
+  onPickFollowUp?: (q: string) => void;
+}) {
   const isUser = message.role === 'user';
   const meta = message.metadata;
+  const streaming = !!meta?.streaming;
 
   if (isUser) {
     return (
@@ -115,10 +150,18 @@ export default function MessageBubble({ message }: { message: ChatMessage }) {
     <div className="flex justify-start">
       <div className="max-w-[88%] rounded-2xl rounded-bl-sm border border-slate-200 bg-white px-4 py-3 shadow-sm">
         {message.pending && !message.content ? (
-          <ProgressList steps={meta?.progress} mode={meta?.mode} />
+          message.steps?.length ? (
+            <ThinkingTrace steps={message.steps} done={!streaming} />
+          ) : (
+            <ProgressList steps={meta?.progress} mode={meta?.mode} />
+          )
         ) : (
           <>
-            {meta?.streaming && meta?.progress?.length ? (
+            {message.steps?.length ? (
+              <div className="mb-3 rounded-lg bg-slate-50 px-3 py-2">
+                <ThinkingTrace steps={message.steps} done={!streaming} />
+              </div>
+            ) : meta?.streaming && meta?.progress?.length ? (
               <div className="mb-3 rounded-lg bg-slate-50 px-3 py-2">
                 <ProgressList steps={meta.progress} mode={meta.mode} />
               </div>
@@ -138,6 +181,15 @@ export default function MessageBubble({ message }: { message: ChatMessage }) {
               </div>
             )}
             {meta?.sources && <SourceList sources={meta.sources} />}
+            {!streaming && message.chart ? (
+              <ChartBlock spec={message.chart} />
+            ) : null}
+            {!streaming && message.suggestions?.length ? (
+              <FollowUpChips
+                items={message.suggestions}
+                onPick={(q) => onPickFollowUp?.(q)}
+              />
+            ) : null}
           </>
         )}
       </div>

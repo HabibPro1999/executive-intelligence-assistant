@@ -29,6 +29,12 @@ async function authHeaders(extra: Record<string, string> = {}): Promise<HeadersI
     : extra;
 }
 
+// Plain-record auth header for callers that build their own fetch (e.g. useSpeech.playTts).
+export async function getAuthHeader(): Promise<Record<string, string>> {
+  const token = accessTokenGetter ? await accessTokenGetter() : null;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 function absolutizeDownloadUrl<T extends DeckCreateResponse>(data: T): T {
   if (data.deck?.downloadUrl?.startsWith('/api')) {
     return {
@@ -182,7 +188,13 @@ export async function createDeck(
     headers: await authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ message }),
   });
-  return absolutizeDownloadUrl(await json<DeckCreateResponse>(res));
+  const data = absolutizeDownloadUrl(await json<DeckCreateResponse>(res));
+  // Feature C: surface the top-level rich preview slides onto the deck so they
+  // travel with it into message metadata (DeckSummary.previewSlides).
+  if (data.deck && Array.isArray(data.slides)) {
+    return { ...data, deck: { ...data.deck, previewSlides: data.slides } };
+  }
+  return data;
 }
 
 export async function getPreferenceProfile(): Promise<UserPreferenceProfile | null> {
