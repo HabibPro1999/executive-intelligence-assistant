@@ -163,16 +163,23 @@ setPreferencesBusy(false);
       ]);
       setSending(true);
       setError(null);
-      // Unlock audio within this user gesture so the answer can be spoken on iOS.
-      if (speakOn) speech.unlockAudio();
-      let answerText = '';
+      // Unlock audio within this user gesture so the answer can be spoken on iOS,
+      // then reset the streaming sentence pipeline (barge-in over any prior utterance).
+      // INVARIANT: resetQueue() must run SYNCHRONOUSLY here — before the first await
+      // (sendMessageStream) — so genRef is bumped ahead of any in-flight synthesize()
+      // fetch resolving. The post-await stale checks in synthesize() then drop late
+      // results, preventing orphaned object URLs from the prior utterance.
+      if (speakOn) {
+        speech.unlockAudio();
+        speech.resetQueue(api.getAuthHeader);
+      }
       try {
         await api.sendMessageStream(conversationId, text, mode, (event) => {
           if (event.type === 'error') throw new Error(event.message);
-          if (event.type === 'delta') answerText += event.text;
-          if (event.type === 'done' && speakOn && answerText.trim()) {
-            void speech.playTts(answerText, api.getAuthHeader);
-          }
+          // Stream each delta into the sentence pipeline (sync; prefetch + ordered
+          // playback self-drive). Flush the trailing partial on 'done'.
+          if (speakOn && event.type === 'delta') speech.pushStreamText(event.text);
+          if (speakOn && event.type === 'done') speech.finishStream();
           setMessages((m) =>
             m.map((msg) => {
               if (msg.id !== pendingId) return msg;
