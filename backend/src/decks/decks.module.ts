@@ -7,6 +7,7 @@ import { RetrievalModule } from '../retrieval/retrieval.module';
 import { DecksController } from './decks.controller';
 import { DecksService } from './decks.service';
 import { PptxDeckRenderer } from './pptx-deck.renderer';
+import { NextGenDeckRenderer } from './nextgen-deck.renderer';
 
 @Module({
   imports: [
@@ -17,6 +18,6 @@ import { PptxDeckRenderer } from './pptx-deck.renderer';
     PreferencesModule,
   ],
   controllers: [DecksController],
-  providers: [DecksService, PptxDeckRenderer],
+  providers: [DecksService, PptxDeckRenderer, NextGenDeckRenderer],
 })
 export class DecksModule {}

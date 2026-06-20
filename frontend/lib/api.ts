@@ -7,6 +7,7 @@ import {
   DeckCreateResponse,
   AssistantMode,
   DeckSummary,
+  DeckStyle,
   UserPreferenceProfile,
   ChatStreamEvent,
 } from '@/types';
@@ -182,11 +183,12 @@ export async function sendMessageStream(
 export async function createDeck(
   id: string,
   message: string,
+  style: DeckStyle = 'classic',
 ): Promise<DeckCreateResponse> {
   const res = await fetch(`${API}/conversations/${id}/decks`, {
     method: 'POST',
     headers: await authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, style }),
   });
   const data = absolutizeDownloadUrl(await json<DeckCreateResponse>(res));
   // Feature C: surface the top-level rich preview slides onto the deck so they

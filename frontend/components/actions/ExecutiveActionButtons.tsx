@@ -1,12 +1,17 @@
 'use client';
 
 import { Search, Sparkles } from 'lucide-react';
-import { EXECUTIVE_ACTIONS, STRATEGY_DECK_ACTION, WEB_RESEARCH_ACTIONS } from '@/lib/modes';
-import { AssistantMode } from '@/types';
+import {
+  EXECUTIVE_ACTIONS,
+  NEXTGEN_DECK_ACTION,
+  STRATEGY_DECK_ACTION,
+  WEB_RESEARCH_ACTIONS,
+} from '@/lib/modes';
+import { AssistantMode, DeckStyle } from '@/types';
 
 interface Props {
   onAction: (mode: AssistantMode, message: string) => void;
-  onDeck: (message: string) => void;
+  onDeck: (message: string, style: DeckStyle) => void;
   disabled?: boolean;
   webResearchEnabled?: boolean;
 }
@@ -35,11 +40,20 @@ export default function ExecutiveActionButtons({
         </button>
       ))}
       <button
-        onClick={() => onDeck(STRATEGY_DECK_ACTION.message)}
+        onClick={() => onDeck(STRATEGY_DECK_ACTION.message, 'classic')}
         disabled={disabled}
         className="rounded-full border border-brand bg-brand px-3 py-1 text-xs font-semibold text-white transition hover:bg-brand/90 disabled:cursor-not-allowed disabled:opacity-40"
       >
         {STRATEGY_DECK_ACTION.label}
+      </button>
+      <button
+        onClick={() => onDeck(NEXTGEN_DECK_ACTION.message, 'nextgen')}
+        disabled={disabled}
+        title="Board-ready deck in the premium Next-Gen template"
+        className="inline-flex items-center gap-1 rounded-full border border-[#00A9F4] bg-[#061F32] px-3 py-1 text-xs font-semibold text-white transition hover:bg-[#0a2d49] disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        <Sparkles className="h-3.5 w-3.5 text-[#00A9F4]" />
+        {NEXTGEN_DECK_ACTION.label}
       </button>
       {webResearchEnabled && (
         <>

@@ -11,6 +11,7 @@ import {
   Confidence,
   DeckSlide,
   DeckSpec,
+  DeckStyle,
   DeckSummary,
   RetrievedChunk,
   Source,
@@ -22,9 +23,18 @@ import { GenerationService } from '../generation/generation.service';
 import { PreferencesService } from '../preferences/preferences.service';
 import { RetrievalService } from '../retrieval/retrieval.service';
 import { PptxDeckRenderer } from './pptx-deck.renderer';
+import { NextGenDeckRenderer } from './nextgen-deck.renderer';
 
 export interface CreateDeckRequest {
   message?: string;
+  // Visual template. Defaults to 'classic' when omitted or invalid.
+  style?: DeckStyle;
+}
+
+const DECK_STYLES: DeckStyle[] = ['classic', 'nextgen'];
+
+function normalizeStyle(value: unknown): DeckStyle {
+  return DECK_STYLES.includes(value as DeckStyle) ? (value as DeckStyle) : 'classic';
 }
 
 // In-browser preview slide shape (additive; mirrors the structured DeckSpec
@@ -76,6 +86,7 @@ export class DecksService {
     private readonly retrieval: RetrievalService,
     private readonly generation: GenerationService,
     private readonly renderer: PptxDeckRenderer,
+    private readonly nextgenRenderer: NextGenDeckRenderer,
     private readonly preferences: PreferencesService,
   ) {}
 
@@ -85,12 +96,14 @@ export class DecksService {
     body: CreateDeckRequest = {},
   ): Promise<CreateDeckResponse> {
     await this.conversations.ensureExists(conversationId, userId);
+    const style = normalizeStyle(body.style);
     const request =
       body.message?.trim() ||
       'Generate a strategy-consulting presentation deck from the approved documents.';
     const preferenceContext = await this.preferences.retrieveContext(userId, request);
     const userMsg = await this.addMessage(conversationId, 'user', request, {
       mode: 'strategy_deck',
+      deckStyle: style,
     });
 
     const knowledge = await this.resolveKnowledgeConversation(userId, conversationId);
@@ -113,6 +126,7 @@ export class DecksService {
     const confidence = this.generation.computeConfidence(relevant);
     const sources = this.generation.toSources(relevant);
     const deckSpec = await this.buildDeckSpec(request, relevant, preferenceContext);
+    deckSpec.style = style; // persisted in deck_spec so the export route picks the right renderer
     const sourceChunkIds = [...new Set(relevant.map((chunk) => chunk.id))];
 
     const { deck, assistantMsg } = await this.db.withTransaction(async (client) => {
@@ -203,9 +217,13 @@ export class DecksService {
       [deckId, conversationId, userId],
     );
     if (!row) throw new NotFoundException('Deck not found.');
-    const buffer = await this.renderer.render(row.deck_spec);
+    const style = normalizeStyle(row.deck_spec?.style);
+    const buffer =
+      style === 'nextgen'
+        ? await this.nextgenRenderer.render(row.deck_spec)
+        : await this.renderer.render(row.deck_spec);
     return {
-      filename: `${this.slug(row.title)}.pptx`,
+      filename: `${this.slug(row.title)}${style === 'nextgen' ? '-nextgen' : ''}.pptx`,
       buffer,
     };
   }
@@ -636,6 +654,7 @@ export class DecksService {
       sources,
       confidence,
       insufficient: false,
+      style: normalizeStyle(spec.style),
       downloadUrl: `/api/conversations/${conversationId}/decks/${deckId}/download`,
     };
   }

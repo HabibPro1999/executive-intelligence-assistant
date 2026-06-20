@@ -46,6 +46,14 @@ export const STRATEGY_DECK_ACTION = {
     'Generate a strategy-consulting presentation deck from the uploaded approved documents.',
 } as const;
 
+// Next-Gen Deck: same document-grounded content, rendered in the premium
+// McKinsey-grade dark template reverse-engineered from the reference deck.
+export const NEXTGEN_DECK_ACTION = {
+  label: 'Next-Gen Deck',
+  message:
+    'Generate a board-ready presentation deck from the uploaded approved documents.',
+} as const;
+
 export const WEB_RESEARCH_ACTIONS: ModeAction[] = [
   {
     mode: 'web_research',

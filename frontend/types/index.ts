@@ -21,6 +21,10 @@ export const ASSISTANT_MODES = [
 ] as const;
 export type AssistantMode = (typeof ASSISTANT_MODES)[number];
 
+// Deck visual template. 'classic' = original consulting template;
+// 'nextgen' = McKinsey-grade dark theme from the reference deck.
+export type DeckStyle = 'classic' | 'nextgen';
+
 export interface Source {
   documentId: string | null;
   filename: string;
@@ -134,6 +138,7 @@ export interface DeckSummary {
   sources: Source[];
   confidence: Confidence;
   insufficient: boolean;
+  style?: DeckStyle;
   downloadUrl: string;
 }
 

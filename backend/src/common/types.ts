@@ -121,6 +121,11 @@ export type DeckSlideType =
   | 'recommendations'
   | 'appendix';
 
+// Visual style for deck rendering. 'classic' is the original in-house
+// consulting template; 'nextgen' renders the McKinsey-grade dark theme
+// reverse-engineered from the Apparel Group reference deck.
+export type DeckStyle = 'classic' | 'nextgen';
+
 export type DeckVisualType = 'none' | 'callout' | 'table' | 'chart';
 
 export interface DeckVisual {
@@ -156,6 +161,9 @@ export interface DeckSpec {
   audience: string;
   slides: DeckSlide[];
   sources: DeckSource[];
+  // Persisted alongside the spec so the download route knows which renderer
+  // to use. Absent on older decks, which fall back to 'classic'.
+  style?: DeckStyle;
 }
 
 export interface DeckSummary {
@@ -166,6 +174,7 @@ export interface DeckSummary {
   sources: Source[];
   confidence: Confidence;
   insufficient: boolean;
+  style: DeckStyle;
 downloadUrl: string;
 }
 

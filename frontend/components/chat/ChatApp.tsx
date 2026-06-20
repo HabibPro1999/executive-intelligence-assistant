@@ -13,6 +13,7 @@ import {
 import {
   AssistantMode,
   ChatMessage,
+  DeckStyle,
   DocumentRecord,
   UserPreferenceProfile,
 } from '@/types';
@@ -283,7 +284,7 @@ setPreferencesBusy(false);
   );
 
   const handleDeck = useCallback(
-    async (text: string) => {
+    async (text: string, style: DeckStyle = 'classic') => {
       if (sending) return;
       const userMsg: ChatMessage = {
         id: tmpId(),
@@ -300,7 +301,7 @@ setPreferencesBusy(false);
       setSending(true);
       setError(null);
       try {
-        const res = await api.createDeck(conversationId, text);
+        const res = await api.createDeck(conversationId, text, style);
         setMessages((m) =>
           m.map((msg) =>
             msg.id === pendingId

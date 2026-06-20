@@ -54,6 +54,8 @@ function DeckCard({ deck }: { deck: DeckSummary }) {
 
   const previewSlides = deck.previewSlides ?? [];
   const canPreview = previewSlides.length > 0;
+  const isNextGen = deck.style === 'nextgen';
+  const deckLabel = isNextGen ? 'Next-Gen Deck' : 'Strategy Deck';
 
   const download = async () => {
     setBusy(true);
@@ -71,9 +73,13 @@ function DeckCard({ deck }: { deck: DeckSummary }) {
     <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-brand">
+          <div
+            className={`flex items-center gap-2 text-xs font-semibold uppercase tracking-wide ${
+              isNextGen ? 'text-[#00A9F4]' : 'text-brand'
+            }`}
+          >
             <FileSliders className="h-4 w-4" />
-            Strategy Deck
+            {deckLabel}
           </div>
           <h3 className="mt-1 text-sm font-semibold text-ink">{deck.title}</h3>
           <p className="mt-1 text-xs leading-relaxed text-slate-600">{deck.thesis}</p>
@@ -109,6 +115,7 @@ function DeckCard({ deck }: { deck: DeckSummary }) {
         <DeckPreview
           title={deck.title}
           slides={previewSlides}
+          style={deck.style}
           onClose={() => setPreviewOpen(false)}
           onDownload={download}
         />
