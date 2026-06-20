@@ -55,9 +55,6 @@ const SLIDE = {
   h: 7.5,
   mx: 0.6, // left/right spine (source master = 0.607in)
   contentW: 12.13,
-  headlineY: 0.55,
-  ruleY: 1.4,
-  bodyTop: 1.66,
   bannerY: 5.66,
   footerY: 7.06,
 };
@@ -203,14 +200,17 @@ export class NextGenDeckRenderer {
   private columnsSlide(pptx: any, spec: DeckSpec, slide: DeckSlide, index: number): void {
     const s = pptx.addSlide();
     s.background = { color: C.white };
-    this.lightHeader(s, slide);
+    const top = this.lightHeader(s, slide);
 
     const items = (slide.bullets.length ? slide.bullets : [slide.keyMessage]).slice(0, 3);
     const n = Math.max(items.length, 1);
     const gap = 0.36;
     const cardW = (SLIDE.contentW - gap * (n - 1)) / n;
-    const cardY = SLIDE.bodyTop + 0.12;
-    const cardH = 3.5;
+    const contentBottom = SLIDE.bannerY - 0.28;
+    const avail = contentBottom - top;
+    const anyBody = items.some((it) => this.splitHeadAndBody(it)[1]);
+    const cardH = Math.min(anyBody ? 2.9 : 2.4, avail);
+    const cardY = top + Math.max(0, (avail - cardH) / 2); // center the card band
 
     items.forEach((item, i) => {
       const x = SLIDE.mx + i * (cardW + gap);
@@ -218,24 +218,26 @@ export class NextGenDeckRenderer {
       this.rect(s, x, cardY, cardW, 0.08, C.cyan);
 
       // Cyan numbered disc.
-      this.ellipse(s, x + 0.3, cardY + 0.34, 0.62, 0.62, C.cyan);
+      this.ellipse(s, x + 0.32, cardY + 0.42, 0.6, 0.6, C.cyan);
       s.addText(String(i + 1), {
-        x: x + 0.3, y: cardY + 0.34, w: 0.62, h: 0.62,
+        x: x + 0.32, y: cardY + 0.42, w: 0.6, h: 0.6,
         fontFace: FONT_HEAD, fontSize: 22, bold: true, color: C.white,
         align: 'center', valign: 'middle', margin: 0,
       });
 
-      const [head, ...rest] = this.splitHeadAndBody(item);
+      const [head, body] = this.splitHeadAndBody(item);
       s.addText(head, {
-        x: x + 0.3, y: cardY + 1.18, w: cardW - 0.6, h: 0.86,
+        x: x + 0.32, y: cardY + 1.28, w: cardW - 0.64, h: body ? 0.9 : 1.34,
         fontFace: FONT_HEAD, fontSize: 16, bold: true, color: C.steel,
         valign: 'top', fit: 'shrink', margin: 0,
       });
-      s.addText(rest.join(' ') || ' ', {
-        x: x + 0.3, y: cardY + 2.06, w: cardW - 0.6, h: cardH - 2.26,
-        fontFace: FONT_BODY, fontSize: 12, color: C.body,
-        valign: 'top', fit: 'shrink', margin: 0,
-      });
+      if (body) {
+        s.addText(body, {
+          x: x + 0.32, y: cardY + 2.22, w: cardW - 0.64, h: cardH - 2.42,
+          fontFace: FONT_BODY, fontSize: 12, color: C.body,
+          valign: 'top', fit: 'shrink', margin: 0,
+        });
+      }
     });
 
     this.takeawayBanner(s, slide.keyMessage);
@@ -248,28 +250,28 @@ export class NextGenDeckRenderer {
   private agendaSlide(pptx: any, spec: DeckSpec, slide: DeckSlide, index: number): void {
     const s = pptx.addSlide();
     s.background = { color: C.white };
-    this.lightHeader(s, slide);
+    const top = this.lightHeader(s, slide);
 
     const items = (slide.bullets.length ? slide.bullets : [slide.keyMessage]).slice(0, 4);
-    const top = SLIDE.bodyTop + 0.18;
-    const pitch = Math.min(0.92, (SLIDE.bannerY - 0.2 - top) / Math.max(items.length, 1));
+    const rowTop = top + 0.1;
+    const pitch = (SLIDE.bannerY - 0.3 - rowTop) / Math.max(items.length, 1); // fill the band
 
     items.forEach((item, i) => {
-      const y = top + i * pitch;
-      if (i > 0) this.rect(s, SLIDE.mx, y - 0.06, SLIDE.contentW, 0.012, C.line);
+      const y = rowTop + i * pitch;
+      if (i > 0) this.rect(s, SLIDE.mx, y, SLIDE.contentW, 0.012, C.line);
       s.addText(String(i + 1), {
-        x: SLIDE.mx, y: y, w: 0.9, h: pitch - 0.12,
-        fontFace: FONT_HEAD, fontSize: 32, bold: true, color: C.statCyan,
+        x: SLIDE.mx, y, w: 0.9, h: pitch,
+        fontFace: FONT_HEAD, fontSize: 34, bold: true, color: C.statCyan,
         align: 'left', valign: 'middle', margin: 0,
       });
-      const [head, ...rest] = this.splitHeadAndBody(item);
+      const [head, body] = this.splitHeadAndBody(item);
       s.addText(
         [
-          { text: head + (rest.length ? '  ' : ''), options: { bold: true, color: C.steel } },
-          ...(rest.length ? [{ text: rest.join(' '), options: { color: C.body } }] : []),
+          { text: head + (body ? '  ' : ''), options: { bold: true, color: C.steel } },
+          ...(body ? [{ text: body, options: { color: C.body } }] : []),
         ],
         {
-          x: SLIDE.mx + 1.0, y: y, w: SLIDE.contentW - 1.0, h: pitch - 0.12,
+          x: SLIDE.mx + 1.0, y, w: SLIDE.contentW - 1.0, h: pitch,
           fontFace: FONT_BODY, fontSize: 14, valign: 'middle', fit: 'shrink', margin: 0,
         },
       );
@@ -285,11 +287,12 @@ export class NextGenDeckRenderer {
   private contentSlide(pptx: any, spec: DeckSpec, slide: DeckSlide, index: number): void {
     const s = pptx.addSlide();
     s.background = { color: C.white };
-    this.lightHeader(s, slide);
+    const top = this.lightHeader(s, slide);
 
     const leftX = SLIDE.mx;
     const leftW = 5.35;
-    const colTop = SLIDE.bodyTop + 0.12;
+    const colTop = top + 0.05;
+    const contentBottom = SLIDE.bannerY - 0.28;
 
     s.addText('EVIDENCE & IMPLICATIONS', {
       x: leftX, y: colTop, w: leftW, h: 0.26,
@@ -298,17 +301,20 @@ export class NextGenDeckRenderer {
     });
 
     const bullets = (slide.bullets.length ? slide.bullets : ['Evidence is summarized in the exhibit.']).slice(0, 4);
+    const bTop = colTop + 0.45;
+    const step = Math.min(0.82, (contentBottom - bTop) / Math.max(bullets.length, 1));
     bullets.forEach((b, i) => {
-      const y = colTop + 0.5 + i * 0.8;
+      const y = bTop + i * step;
       this.rect(s, leftX, y + 0.04, 0.17, 0.17, C.cyan);
       s.addText(b, {
-        x: leftX + 0.36, y: y - 0.05, w: leftW - 0.36, h: 0.72,
+        x: leftX + 0.36, y: y - 0.05, w: leftW - 0.36, h: step,
         fontFace: FONT_BODY, fontSize: 12, color: C.ink,
         valign: 'top', fit: 'shrink', margin: 0,
       });
     });
 
-    this.exhibitPanel(s, slide, 6.45, colTop - 0.04, SLIDE.w - SLIDE.mx - 6.45, 3.74);
+    const exY = colTop - 0.04;
+    this.exhibitPanel(s, slide, 6.45, exY, SLIDE.w - SLIDE.mx - 6.45, contentBottom - exY);
 
     this.takeawayBanner(s, slide.keyMessage);
     this.lightFooter(s, spec, slide, index);
@@ -320,7 +326,7 @@ export class NextGenDeckRenderer {
   private appendixSlide(pptx: any, spec: DeckSpec, slide: DeckSlide, index: number): void {
     const s = pptx.addSlide();
     s.background = { color: C.white };
-    this.lightHeader(s, slide);
+    const top = this.lightHeader(s, slide);
 
     const head = ['Ref', 'Document', 'Locator'];
     const body = spec.sources.slice(0, 12).map((src, i) => [
@@ -336,8 +342,9 @@ export class NextGenDeckRenderer {
     ];
 
     s.addTable(rows, {
-      x: SLIDE.mx, y: SLIDE.bodyTop + 0.12, w: SLIDE.contentW, h: 4.6,
+      x: SLIDE.mx, y: top + 0.1, w: SLIDE.contentW,
       colW: [1.1, 7.2, SLIDE.contentW - 8.3],
+      rowH: 0.42,
       border: { type: 'solid', color: C.line, pt: 0.5 },
       fontFace: FONT_BODY, fontSize: 9.5, valign: 'middle', margin: 0.06, autoPage: false,
     } as any);
@@ -350,19 +357,24 @@ export class NextGenDeckRenderer {
   // ===========================================================================
 
   // Teal eyebrow + serif headline + hairline rule (with a short cyan tick).
-  private lightHeader(s: any, slide: DeckSlide): void {
+  // The headline box is tall and BOTTOM-aligned so 1- and 2-line headlines both
+  // sit just above the rule and never collide with it. Returns the y where body
+  // content should begin (so layouts adapt to a consistent rule position).
+  private lightHeader(s: any, slide: DeckSlide): number {
     s.addText(EYEBROW[slide.type], {
-      x: SLIDE.mx, y: SLIDE.headlineY - 0.16, w: SLIDE.contentW, h: 0.24,
+      x: SLIDE.mx, y: 0.4, w: SLIDE.contentW, h: 0.24,
       fontFace: FONT_HEAD, fontSize: 10, bold: true, color: C.teal,
       charSpace: 2, margin: 0,
     });
     s.addText(slide.headline, {
-      x: SLIDE.mx, y: SLIDE.headlineY + 0.12, w: SLIDE.contentW, h: 0.82,
+      x: SLIDE.mx, y: 0.62, w: SLIDE.contentW, h: 1.0,
       fontFace: FONT_HEAD, fontSize: 25, bold: true, color: C.titleNavy,
-      valign: 'top', fit: 'shrink', margin: 0,
+      valign: 'bottom', fit: 'shrink', margin: 0,
     });
-    this.rect(s, SLIDE.mx, SLIDE.ruleY, SLIDE.contentW, 0.013, C.line);
-    this.rect(s, SLIDE.mx, SLIDE.ruleY - 0.005, 1.0, 0.03, C.cyan); // brand tick
+    const ruleY = 1.68;
+    this.rect(s, SLIDE.mx, ruleY, SLIDE.contentW, 0.013, C.line);
+    this.rect(s, SLIDE.mx, ruleY - 0.005, 1.0, 0.03, C.cyan); // brand tick
+    return ruleY + 0.27;
   }
 
   // The signature bright-cyan so-what banner near the slide foot.
@@ -423,21 +435,24 @@ export class NextGenDeckRenderer {
       this.calloutExhibit(s, rows.map((r) => r.join(' — ')).slice(0, 4), x, y, w, h);
       return;
     }
-    const rowH = Math.min(0.6, h / Math.max(parsed.length, 1));
+    const n = Math.min(parsed.length, 6);
+    const pitch = h / n; // distribute rows to fill the panel
+    const barH = Math.min(0.28, pitch * 0.4);
     const labelW = 1.85;
     const trackW = w - labelW - 0.95;
     const palette = [C.cyan, C.blue, C.steel, C.investorBlue, C.navy];
     parsed.slice(0, 6).forEach((r, i) => {
-      const cy = y + i * rowH;
+      const barY = y + i * pitch + (pitch - barH) / 2; // bar centered in its band
+      const txtY = y + i * pitch + (pitch - 0.22) / 2;
       s.addText(r.label, {
-        x, y: cy, w: labelW, h: 0.22,
+        x, y: txtY, w: labelW, h: 0.22,
         fontFace: FONT_BODY, fontSize: 8.5, bold: true, color: C.steel,
         valign: 'middle', fit: 'shrink', margin: 0,
       });
-      this.rect(s, x + labelW, cy + 0.04, trackW, 0.2, C.band);
-      this.rect(s, x + labelW, cy + 0.04, Math.max(0.06, trackW * ((r.value || 0) / max)), 0.2, palette[i % palette.length]);
+      this.rect(s, x + labelW, barY, trackW, barH, C.band);
+      this.rect(s, x + labelW, barY, Math.max(0.06, trackW * ((r.value || 0) / max)), barH, palette[i % palette.length]);
       s.addText(r.valueLabel, {
-        x: x + labelW + trackW + 0.08, y: cy, w: 0.87, h: 0.22,
+        x: x + labelW + trackW + 0.08, y: txtY, w: 0.87, h: 0.22,
         fontFace: FONT_HEAD, fontSize: 9, bold: true, color: C.statCyan,
         valign: 'middle', fit: 'shrink', margin: 0,
       });
@@ -446,16 +461,19 @@ export class NextGenDeckRenderer {
 
   private tableExhibit(s: any, columns: string[], rows: string[][], x: number, y: number, w: number, h: number): void {
     const cols = columns.slice(0, 4);
+    // Pale column-header (the panel already carries the navy title bar, so we
+    // avoid stacking two dark bands). Body rows zebra-striped.
     const table = [
-      cols.map((c) => this.cell(c, { bold: true, color: C.white, fill: { color: C.navyHdr } })),
+      cols.map((c) => this.cell(c, { bold: true, color: C.steel, fill: { color: C.band } })),
       ...rows.map((r, ri) =>
         r.slice(0, 4).map((c) => this.cell(String(c), { color: C.ink, fill: { color: ri % 2 ? C.zebra : C.white } })),
       ),
     ];
     s.addTable(table, {
       x, y, w, h,
+      rowH: h / table.length, // fill the panel height
       border: { type: 'solid', color: C.line, pt: 0.4 },
-      fontFace: FONT_BODY, fontSize: 8.5, valign: 'middle', margin: 0.05, autoPage: false,
+      fontFace: FONT_BODY, fontSize: 9, valign: 'middle', margin: 0.05, autoPage: false,
     } as any);
   }
 
@@ -468,7 +486,7 @@ export class NextGenDeckRenderer {
       });
       return;
     }
-    const cardH = Math.min(0.92, (h - (list.length - 1) * 0.18) / list.length);
+    const cardH = (h - (list.length - 1) * 0.18) / list.length; // fill the panel
     list.forEach((item, i) => {
       const cy = y + i * (cardH + 0.18);
       this.rect(s, x, cy, w, cardH, C.intro);
@@ -536,14 +554,16 @@ export class NextGenDeckRenderer {
 
   // ----- text helpers --------------------------------------------------------
 
-  // Split "Bold lead. rest" into a head + body so cards/rows read with a lead.
-  private splitHeadAndBody(text: string): string[] {
+  // Split "Lead: detail" / "Lead — detail" into [head, body] on a REAL delimiter
+  // only (and only when the body is a couple words or more). With no delimiter
+  // the whole string is the head — never an orphaned trailing word or two.
+  private splitHeadAndBody(text: string): [string, string] {
     const clean = (text || '').replace(/\s+/g, ' ').trim();
-    const m = clean.match(/^(.{0,64}?[.:—-])\s+(.*)$/);
-    if (m && m[2]) return [m[1].replace(/[\s.:—-]+$/, ''), m[2]];
-    const words = clean.split(' ');
-    if (words.length <= 7) return [clean];
-    return [words.slice(0, 7).join(' '), words.slice(7).join(' ')];
+    const m = clean.match(/^(.{3,72}?)\s*[:—–]\s+(.+)$/);
+    if (m && m[2] && m[2].split(' ').length >= 2) {
+      return [m[1].replace(/[\s:—–-]+$/, ''), m[2]];
+    }
+    return [clean, ''];
   }
 
   private footnote(sources: DeckSource[], refs: string[]): string {
